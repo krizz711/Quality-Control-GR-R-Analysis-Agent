@@ -1,6 +1,6 @@
 # Project Progress
 
-Last updated: May 23, 2026
+Last updated: May 24, 2026
 
 ## Completed So Far
 
@@ -121,6 +121,170 @@ Verified that:
 - the requested indexes exist
 - the required extensions are enabled
 
+### 11. Added Kafka services to Docker Compose
+
+Updated `docker-compose.yml` to include these services:
+
+```text
+zookeeper
+kafka
+kafka-ui
+```
+
+The existing `timescaledb` and `pgadmin` services were kept unchanged.
+
+### 12. Configured Kafka networking correctly
+
+Kafka now has two listeners:
+
+```text
+INTERNAL://kafka:29092
+EXTERNAL://localhost:9092
+```
+
+This allows:
+
+- Docker containers to connect to Kafka using `kafka:29092`
+- local scripts on Windows to connect using `localhost:9092`
+
+Kafka UI is configured to use:
+
+```text
+kafka:29092
+```
+
+This fixed the Kafka UI issue where the Topics page kept loading forever because Kafka UI was trying to connect to `localhost:9092` from inside its own container.
+
+### 13. Started and verified Kafka UI
+
+Kafka UI is running at:
+
+```text
+http://localhost:8080
+```
+
+Verified that Kafka UI can connect to the Kafka cluster named:
+
+```text
+arad-local
+```
+
+### 14. Created the Kafka topic
+
+Created and verified this Kafka topic:
+
+```text
+quality.measurements
+```
+
+### 15. Created the synthetic Kafka publisher script
+
+Created this script:
+
+```text
+scripts/synthetic_publisher.py
+```
+
+The script:
+
+- reads `KAFKA_BOOTSTRAP_SERVERS` from the environment
+- defaults to `localhost:9092`
+- uses `confluent-kafka` Producer
+- publishes JSON measurement records to `quality.measurements`
+- supports `--count`
+- supports `--delay-ms`
+- supports `--bootstrap-servers`
+- prints progress every 100 records
+- inserts an intentional out-of-control value every 200th record
+- prints total count and elapsed time when finished
+
+### 16. Verified Python dependency
+
+Confirmed that `confluent-kafka` already exists in `pyproject.toml`:
+
+```text
+confluent-kafka = "^2.6"
+```
+
+### 17. Reapplied and verified the database schema after container recreation
+
+After recreating Docker services, the TimescaleDB container was fresh and empty.
+
+The saved migration file was reapplied:
+
+```text
+db/migrations/001_initial_schema.sql
+```
+
+Verified again that:
+
+- `measurements` exists
+- `grr_studies` exists
+- `quality_violations` exists
+- `measurements` is a TimescaleDB hypertable
+
+### 18. Added MLflow to Docker Compose
+
+Added an `mlflow` service to `docker-compose.yml`.
+
+MLflow is exposed at:
+
+```text
+http://localhost:5000
+```
+
+MLflow uses the existing TimescaleDB/PostgreSQL database as its backend store:
+
+```text
+postgresql://arad:arad_pass@timescaledb:5432/arad_quality
+```
+
+MLflow artifacts are stored locally in:
+
+```text
+mlflow-artifacts/
+```
+
+### 19. Fixed MLflow PostgreSQL driver issue
+
+The first MLflow container exited because the base MLflow image did not include the PostgreSQL driver:
+
+```text
+No module named 'psycopg2'
+```
+
+Created this Dockerfile:
+
+```text
+docker/mlflow/Dockerfile
+```
+
+It builds from `ghcr.io/mlflow/mlflow:v2.18.0` and installs:
+
+```text
+psycopg2-binary
+```
+
+The `mlflow` service now builds a custom image:
+
+```text
+arad-quality-agent-mlflow:2.18.0
+```
+
+### 20. Verified MLflow
+
+Rebuilt and restarted MLflow using:
+
+```powershell
+docker compose up -d --build mlflow
+```
+
+Verified that:
+
+- the MLflow container stays running
+- MLflow created its database tables
+- `http://localhost:5000` returns HTTP 200
+
 ## Important Note
 
 The original requested schema used this for the `measurements` table:
@@ -143,6 +307,12 @@ This keeps the UUID ID while making the table valid as a TimescaleDB hypertable.
 
 The initial database schema is created, applied, and verified.
 
+The Kafka stack is running and verified.
+
+The synthetic measurement publisher script is created.
+
+MLflow is running and verified.
+
 You can view it in pgAdmin under:
 
 ```text
@@ -155,4 +325,34 @@ You should see:
 measurements
 grr_studies
 quality_violations
+```
+
+You can view Kafka in Kafka UI at:
+
+```text
+http://localhost:8080
+```
+
+You should see the Kafka cluster:
+
+```text
+arad-local
+```
+
+You should also see the topic:
+
+```text
+quality.measurements
+```
+
+You can view MLflow at:
+
+```text
+http://localhost:5000
+```
+
+To publish synthetic measurement data, run:
+
+```powershell
+python scripts\synthetic_publisher.py --count 1000 --delay-ms 100
 ```
