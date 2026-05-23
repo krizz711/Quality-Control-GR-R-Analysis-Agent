@@ -285,6 +285,61 @@ Verified that:
 - MLflow created its database tables
 - `http://localhost:5000` returns HTTP 200
 
+### 21. Created the MLflow setup script
+
+Created this script:
+
+```text
+scripts/setup_mlflow.py
+```
+
+The script:
+
+- loads `.env` using `python-dotenv`
+- reads `MLFLOW_TRACKING_URI`
+- defaults to `http://localhost:5000`
+- creates the `grr_studies` experiment if missing
+- creates the `spc_models` experiment if missing
+- prints both experiment IDs
+- creates a synthetic test run in `grr_studies`
+- logs GR&R parameters
+- logs GR&R metrics
+- sets run tags
+- retrieves the run by `run_id`
+- verifies that `grr_pct` was logged as `18.5`
+- prints the run ID and MLflow UI link
+
+### 22. Verified the MLflow setup script
+
+Ran:
+
+```powershell
+python scripts\setup_mlflow.py
+```
+
+Verified that the script completed successfully and created a run in MLflow.
+
+The script used:
+
+```text
+grr_studies experiment ID: 1
+spc_models experiment ID: 2
+```
+
+### 23. Added local environment file
+
+Created a local `.env` file with:
+
+```text
+DATABASE_URL=postgresql+asyncpg://arad:arad_pass@localhost:5432/arad_quality
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+MLFLOW_TRACKING_URI=http://localhost:5000
+SLACK_WEBHOOK_URL=
+ANTHROPIC_API_KEY=
+```
+
+The `.env` file is ignored by Git, so it stays local and will not be pushed to GitHub.
+
 ## Important Note
 
 The original requested schema used this for the `measurements` table:
@@ -312,6 +367,10 @@ The Kafka stack is running and verified.
 The synthetic measurement publisher script is created.
 
 MLflow is running and verified.
+
+The MLflow setup script is created and verified.
+
+The local `.env` file is created and ignored by Git.
 
 You can view it in pgAdmin under:
 
@@ -355,4 +414,10 @@ To publish synthetic measurement data, run:
 
 ```powershell
 python scripts\synthetic_publisher.py --count 1000 --delay-ms 100
+```
+
+To verify MLflow experiments and create a test run, run:
+
+```powershell
+python scripts\setup_mlflow.py
 ```
