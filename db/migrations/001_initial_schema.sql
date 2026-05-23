@@ -1,0 +1,56 @@
+CREATE TABLE measurements (
+    id UUID DEFAULT gen_random_uuid(),
+    timestamp TIMESTAMPTZ NOT NULL,
+    part_number VARCHAR(64) NOT NULL,
+    characteristic_name VARCHAR(128) NOT NULL,
+    nominal_value DOUBLE PRECISION,
+    measured_value DOUBLE PRECISION NOT NULL,
+    unit VARCHAR(16),
+    operator_id VARCHAR(64),
+    equipment_id VARCHAR(64),
+    shift VARCHAR(16),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by VARCHAR(64) DEFAULT 'system',
+    PRIMARY KEY (id, timestamp)
+);
+
+SELECT create_hypertable('measurements', 'timestamp');
+
+CREATE TABLE grr_studies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    equipment_id VARCHAR(64) NOT NULL,
+    characteristic_name VARCHAR(128) NOT NULL,
+    status VARCHAR(32) DEFAULT 'pending',
+    ev DOUBLE PRECISION,
+    av DOUBLE PRECISION,
+    pv DOUBLE PRECISION,
+    grr_pct DOUBLE PRECISION,
+    ndc INTEGER,
+    acceptance_decision VARCHAR(32),
+    report_path TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    reviewed_by VARCHAR(64),
+    review_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by VARCHAR(64) DEFAULT 'system'
+);
+
+CREATE TABLE quality_violations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp TIMESTAMPTZ NOT NULL,
+    part_number VARCHAR(64),
+    characteristic_name VARCHAR(128),
+    violation_type VARCHAR(64),
+    severity VARCHAR(16),
+    measured_value DOUBLE PRECISION,
+    ucl DOUBLE PRECISION,
+    lcl DOUBLE PRECISION,
+    alert_sent BOOLEAN DEFAULT FALSE,
+    acknowledged_by VARCHAR(64),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON measurements (part_number, timestamp DESC);
+CREATE INDEX ON measurements (equipment_id);
+CREATE INDEX ON quality_violations (part_number, timestamp DESC);
