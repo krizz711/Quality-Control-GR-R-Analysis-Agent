@@ -98,7 +98,7 @@ def grr_xbar_r(
         d2_AV = d2_star[n_operators]
         d2_PV = d2_star[n_parts]
     except KeyError as e:
-        raise ValueError(f"Value not supported in d2* table: {e.args[0]}. Table supports values 2-10.")
+        raise ValueError(f"Value not supported in d2* table: {e.args[0]}. Table supports values 2-10. For n>10 use the ANOVA method instead.")
 
     # 7. COMPUTE VARIANCE COMPONENTS
     EV = R_bar / d2_EV
