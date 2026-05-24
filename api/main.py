@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 import uuid
+import numpy as np
 import pandas as pd
 import mlflow
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from db.database import AsyncSessionLocal
-from db.models import GrrStudy, ReviewQueue
+from db.models import GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 
@@ -231,10 +232,80 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
     """
     Run SPC control chart analysis and Nelson rule evaluation.
     """
-    # TODO: Call spc.control_charts based on body.chart_type
-    # TODO: Run spc.nelson_rules.evaluate_all_rules() on the chart data
-    # TODO: Return SPCResponse with limits and violations
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="SPC analysis endpoint not yet implemented",
-    )
+    try:
+        from spc.nelson_rules import evaluate_all_rules
+
+        values = np.array(body.values)
+
+        # ── 1. Run the appropriate chart ─────────────────────────────────
+        if body.chart_type == "i_mr":
+            from spc.control_charts import individuals_mr_chart
+
+            i_chart, mr_chart = individuals_mr_chart(values)
+            primary_chart = i_chart
+            sigma = i_chart.limits.sigma
+
+        elif body.chart_type == "xbar_r":
+            from spc.control_charts import xbar_r_chart
+
+            n = body.subgroup_size
+            rows = [{"subgroup": i // n, "value": v}
+                    for i, v in enumerate(body.values)]
+            df = pd.DataFrame(rows)
+            xbar, r_chart = xbar_r_chart(df)
+            primary_chart = xbar
+            sigma = xbar.limits.sigma
+
+        elif body.chart_type == "p":
+            from spc.control_charts import p_chart
+
+            counts = [int(v) for v in body.values]
+            sizes = [body.subgroup_size] * len(counts)
+            primary_chart = p_chart(counts, sizes)
+            sigma = (primary_chart.limits.ucl - primary_chart.limits.cl) / 3
+
+        else:
+            raise ValueError(f"Unsupported chart_type: {body.chart_type}")
+
+        # ── 2. Nelson rules on the primary chart points ──────────────────
+        chart_values = np.array(primary_chart.points) if primary_chart.points else values
+        nelson_violations = evaluate_all_rules(chart_values, primary_chart.limits.cl, sigma)
+
+        # ── 3. Persist Rule 1 violations (critical) ──────────────────────
+        rule_1_indices = nelson_violations.get("rule_1", [])
+        if rule_1_indices:
+            now = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as session:
+                for idx in rule_1_indices:
+                    violation = QualityViolation(
+                        timestamp=now,
+                        violation_type="nelson_rule_1",
+                        severity="critical",
+                        measured_value=float(values[idx]),
+                        ucl=primary_chart.limits.ucl,
+                        lcl=primary_chart.limits.lcl,
+                        alert_sent=False,
+                    )
+                    session.add(violation)
+                await session.commit()
+
+            logger.info(
+                "Persisted %d Nelson Rule 1 violations to quality_violations",
+                len(rule_1_indices),
+            )
+
+        # ── 4. Return response ───────────────────────────────────────────
+        return SPCResponse(
+            chart_type=body.chart_type,
+            ucl=primary_chart.limits.ucl,
+            cl=primary_chart.limits.cl,
+            lcl=primary_chart.limits.lcl,
+            out_of_control_indices=primary_chart.out_of_control,
+            nelson_violations=nelson_violations,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )

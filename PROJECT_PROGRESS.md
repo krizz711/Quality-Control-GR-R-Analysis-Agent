@@ -532,3 +532,29 @@ Created the `POST /studies/grr` endpoint combining the full stack:
 - Handled edge cases by adding fallback error handling for unknown calculator methods.
 - Optimized codebase and resolved Ruff linting warnings by removing unused variables.
 - Configured FastAPI API tests (`tests/test_api_grr.py`) with `pytest` and `httpx` to verify payload submission, database interactions, and MLflow logging.
+
+### 33. Implemented SPC Control Charts Engine
+- Implemented `xbar_r_chart` in `spc/control_charts.py` for subgrouped data, utilizing AIAG A2, D3, D4 constants.
+- Implemented `individuals_mr_chart` for non-subgrouped individual data utilizing a moving range approach (d2=1.128, multipliers 2.66 / 3.267).
+- Implemented `p_chart` for defect proportion monitoring supporting variable subgroup sizes and calculating dynamic control limits per subgroup.
+- Added comprehensive logging at `INFO` level and robust error/limit calculations for empty out-of-control conditions.
+
+### 34. Developed Nelson Rules Engine
+- Implemented all 8 Nelson rules in `spc/nelson_rules.py` for standard special-cause detection using sliding-window approaches.
+- Created `evaluate_all_rules()` function to evaluate all 8 rules simultaneously on a dataset.
+- Added full `INFO` level logging for reporting rule execution and violation summaries.
+
+### 35. Integrated SPC Endpoint with Persistence
+- Implemented `POST /spc/analyze` in `api/main.py` that dispatches to the correct SPC chart.
+- Runs all 8 Nelson rules on the computed points.
+- Automatically persists any critical (Nelson Rule 1) violations to the `quality_violations` TimescaleDB/PostgreSQL table with `severity="critical"`.
+- Handled edge cases with robust try/except wrapping to return HTTP 422 on `ValueError`.
+
+### 36. Completed SPC Test Suite & Validation
+- Replaced all SPC stubs in `tests/test_spc.py` with 10 real passing tests covering:
+  - `TestXbarRChart` limits and out-of-control detection.
+  - `TestIMRChart` limits and outlier detection.
+  - `TestNelsonRules` shift, trend, and outlier violation checks.
+- Removed all `@pytest.mark.skip` decorators and verified a clean, passing test run.
+- Completed e2e live request verification of the SPC endpoint.
+
