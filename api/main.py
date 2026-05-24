@@ -118,6 +118,8 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
         elif body.method == "anova":
             from grr.calculator import grr_anova
             result = grr_anova(df, tolerance=body.tolerance)
+        else:
+            raise ValueError(f"Unknown method: {body.method}")
 
         # 3. Evaluate results
         verdict = evaluate(result)
