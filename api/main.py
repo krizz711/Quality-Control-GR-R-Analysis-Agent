@@ -195,12 +195,33 @@ async def get_study(study_id: str) -> GRRStudyResponse:
     """
     Retrieve results for a previously submitted GR&R study.
     """
-    # TODO: Query database for study by ID
-    # TODO: Return GRRStudyResponse or 404
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Study retrieval not yet implemented",
-    )
+    try:
+        study_uuid = uuid.UUID(study_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid study ID format")
+
+    async with AsyncSessionLocal() as session:
+        study = await session.get(GrrStudy, study_uuid)
+        if not study:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Study not found"
+            )
+        
+        return GRRStudyResponse(
+            study_id=str(study.id),
+            grr_percent=study.grr_pct,
+            acceptance=study.acceptance_decision,
+            ndc=study.ndc,
+            details={
+                "equipment_id": study.equipment_id,
+                "characteristic_name": study.characteristic_name,
+                "ev": study.ev,
+                "av": study.av,
+                "pv": study.pv,
+                "status": study.status
+            }
+        )
 
 
 @app.post("/spc/analyze", response_model=SPCResponse, tags=["spc"])
