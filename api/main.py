@@ -45,7 +45,8 @@ class GRRStudyRequest(BaseModel):
     measurements: list[dict[str, Any]] = Field(
         ..., description="List of {part, operator, value} dicts"
     )
-    method: str = Field("xbar_r", pattern="^(xbar_r|anova)$")
+    method: str = Field("xbar_r", pattern="^(xbar_r|anova)$",
+                        description="xbar_r = AIAG Xbar-R method, anova = Two-way ANOVA method")
     tolerance: float | None = None
     equipment_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -114,11 +115,9 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
         # 2. Call the appropriate calculator
         if body.method == "xbar_r":
             result = grr_xbar_r(df, tolerance=body.tolerance)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="ANOVA not yet implemented"
-            )
+        elif body.method == "anova":
+            from grr.calculator import grr_anova
+            result = grr_anova(df, tolerance=body.tolerance)
 
         # 3. Evaluate results
         verdict = evaluate(result)

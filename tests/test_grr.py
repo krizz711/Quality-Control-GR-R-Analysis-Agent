@@ -70,11 +70,35 @@ class TestGRRXbarR:
 class TestGRRANOVA:
     """Tests for the ANOVA GR&R method."""
 
-    @pytest.mark.skip(reason="Stub — not yet implemented")
     def test_basic_anova(self, aiag_data: pd.DataFrame) -> None:
         result = grr_anova(aiag_data)
-        assert result.total_grr >= 0
+        assert isinstance(result, GRRResult)
+        assert 0 < result.total_grr < 100
         assert result.ndc >= 1
+        assert result.details["method"] == "anova"
+
+    def test_anova_and_xbar_r_agree_within_tolerance(self, aiag_data: pd.DataFrame) -> None:
+        # Both methods on same data should give similar %GRR (within 10 percentage points)
+        result_xbar = grr_xbar_r(aiag_data)
+        result_anova = grr_anova(aiag_data)
+        diff = abs(result_xbar.total_grr - result_anova.total_grr)
+        assert diff < 15.0, f"Methods diverge too much: xbar={result_xbar.total_grr:.1f}% anova={result_anova.total_grr:.1f}%"
+
+    def test_anova_interaction_flag_in_details(self, aiag_data: pd.DataFrame) -> None:
+        result = grr_anova(aiag_data)
+        assert "interaction_significant" in result.details
+        assert "p_interaction" in result.details
+        assert 0 <= result.details["p_interaction"] <= 1
+
+    def test_anova_perfect_system(self) -> None:
+        # Same as xbar_r perfect test — should give near-zero GRR
+        perfect = []
+        for op in ["A", "B", "C"]:
+            for part in range(1, 6):
+                for trial in range(2):
+                    perfect.append({"operator": op, "part": str(part), "measurement": 10.0 + part * 0.5})
+        result = grr_anova(pd.DataFrame(perfect))
+        assert result.total_grr < 5.0, f"Perfect system GRR too high: {result.total_grr}"
 
 
 # ─── Acceptance tests ───────────────────────────────────────────────────────

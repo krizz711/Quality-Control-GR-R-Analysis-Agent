@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +164,112 @@ def grr_anova(
     -------
     GRRResult
     """
-    # TODO: Build two-way ANOVA table (operator, part, operator×part)
-    # TODO: Use scipy.stats or statsmodels for F-tests
-    # TODO: Extract variance components from mean squares
-    # TODO: If interaction is not significant (α > 0.05), pool into error
-    # TODO: Compute EV, AV, interaction, PV from variance components
-    # TODO: Compute TV, %GR&R, ndc
-    logger.info("grr_anova called (stub)")
-    raise NotImplementedError("ANOVA GR&R calculation not yet implemented")
+    # 1. VALIDATE INPUT
+    n_operators = data[operator_col].nunique()
+    n_parts = data[part_col].nunique()
+
+    if n_operators < 2 or n_parts < 2:
+        raise ValueError("Data must have at least 2 unique operators and 2 unique parts.")
+
+    trials_per_cell = data.groupby([operator_col, part_col]).size()
+    k = int(trials_per_cell.iloc[0])
+    if not (trials_per_cell == k).all():
+        raise ValueError("Each operator-part combination must have the same number of trials.")
+
+    grand_mean = data[measurement_col].mean()
+    N = n_parts * n_operators * k
+
+    # 2. COMPUTE CELL MEANS AND MARGINAL MEANS
+    cell_means = data.groupby([operator_col, part_col])[measurement_col].mean()
+    operator_means = data.groupby(operator_col)[measurement_col].mean()
+    part_means = data.groupby(part_col)[measurement_col].mean()
+
+    # 3. COMPUTE SUMS OF SQUARES
+    SS_total = ((data[measurement_col] - grand_mean)**2).sum()
+    SS_part = n_operators * k * ((part_means - grand_mean)**2).sum()
+    SS_operator = n_parts * k * ((operator_means - grand_mean)**2).sum()
+    
+    SS_interaction = 0
+    for op in data[operator_col].unique():
+        for pt in data[part_col].unique():
+            val = cell_means.loc[(op, pt)] - part_means.loc[pt] - operator_means.loc[op] + grand_mean
+            SS_interaction += k * (val**2)
+
+    SS_error = SS_total - SS_part - SS_operator - SS_interaction
+
+    # 4. COMPUTE DEGREES OF FREEDOM
+    df_part = n_parts - 1
+    df_operator = n_operators - 1
+    df_interaction = df_part * df_operator
+    df_error = n_parts * n_operators * (k - 1)
+
+    # 5. COMPUTE MEAN SQUARES
+    MS_part = SS_part / df_part
+    MS_operator = SS_operator / df_operator
+    MS_interaction = SS_interaction / df_interaction
+    MS_error = SS_error / df_error if df_error > 0 else 0
+
+    # 6. F-TEST FOR INTERACTION
+    F_interaction = MS_interaction / MS_error if MS_error > 0 else 0
+    p_interaction = 1 - stats.f.cdf(F_interaction, df_interaction, df_error)
+
+    if p_interaction > 0.05:
+        # Interaction NOT significant — pool into error
+        MS_error_pooled = (SS_interaction + SS_error) / (df_interaction + df_error)
+        interaction_significant = False
+    else:
+        MS_error_pooled = MS_error
+        interaction_significant = True
+
+    # 7. EXTRACT VARIANCE COMPONENTS
+    var_error = MS_error_pooled
+
+    if interaction_significant:
+        var_operator = max(0, (MS_operator - MS_interaction) / (n_parts * k))
+        var_interaction = max(0, (MS_interaction - MS_error) / k)
+        var_part = max(0, (MS_part - MS_interaction) / (n_operators * k))
+    else:
+        var_operator = max(0, (MS_operator - MS_error_pooled) / (n_parts * k))
+        var_interaction = 0
+        var_part = max(0, (MS_part - MS_error_pooled) / (n_operators * k))
+
+    # 8. COMPUTE FINAL METRICS
+    EV = np.sqrt(var_error)
+    AV = np.sqrt(var_operator)
+    IV = np.sqrt(var_interaction)
+    GRR = np.sqrt(var_error + var_operator + var_interaction)
+    PV = np.sqrt(var_part)
+    TV = np.sqrt(GRR**2 + var_part)
+
+    if tolerance is not None:
+        grr_percent = (GRR / (tolerance / 6)) * 100
+    else:
+        grr_percent = (GRR / TV) * 100 if TV > 0 else 0
+
+    ndc = int(1.41 * PV / GRR) if GRR > 0 else 0
+
+    # 9. RETURN GRRResult
+    result = GRRResult(
+        total_grr=round(grr_percent, 4),
+        repeatability=round(EV, 6),
+        reproducibility=round(AV, 6),
+        part_variation=round(PV, 6),
+        total_variation=round(TV, 6),
+        ndc=ndc,
+        details={
+            "method": "anova",
+            "interaction_significant": interaction_significant,
+            "p_interaction": round(float(p_interaction), 4),
+            "ms_error": MS_error,
+            "ms_operator": MS_operator,
+            "ms_part": MS_part,
+            "ms_interaction": MS_interaction,
+            "var_interaction": var_interaction,
+            "n_operators": n_operators,
+            "n_parts": n_parts,
+            "n_trials": k
+        }
+    )
+    
+    logger.info("Calculated GR&R ANOVA successfully: %s", result)
+    return result
