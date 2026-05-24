@@ -12,7 +12,6 @@ Uses ReportLab to produce a professional, multi-page PDF containing:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from io import BytesIO
 from typing import Any
 
