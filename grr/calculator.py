@@ -112,7 +112,7 @@ def grr_xbar_r(
     if tolerance is not None:
         grr_percent = (GRR / (tolerance / 6)) * 100
     else:
-        grr_percent = (GRR / TV) * 100
+        grr_percent = (GRR / TV) * 100 if TV > 0 else 0.0
 
     # 9. COMPUTE NDC
     ndc = int(1.41 * (PV / GRR)) if GRR > 0 else 0
@@ -265,6 +265,7 @@ def grr_anova(
             "ms_part": MS_part,
             "ms_interaction": MS_interaction,
             "var_interaction": var_interaction,
+            "iv": round(float(IV), 6),
             "n_operators": n_operators,
             "n_parts": n_parts,
             "n_trials": k
