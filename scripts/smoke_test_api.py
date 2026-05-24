@@ -1,7 +1,7 @@
 import urllib.request
 import json
 
-url = "http://localhost:8001/studies/grr"
+url = "http://localhost:8000/studies/grr"
 data = {
     "part_ids": ["P1", "P2", "P3", "P4", "P5"],
     "operator_ids": ["A", "B", "C"],
