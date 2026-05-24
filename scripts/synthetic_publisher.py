@@ -1,59 +1,105 @@
 import argparse
-import json
-import os
 import random
+import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from confluent_kafka import Producer
+from confluent_kafka.admin import AdminClient, NewTopic
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.config import settings  # noqa: E402
+from schemas.measurement import MeasurementEvent  # noqa: E402
 
 
 TOPIC = "quality.measurements"
+EVENTS_TOPIC = "quality.events"
 
+
+# ─── Topic provisioning ───────────────────────────────────────────────────────
+
+def ensure_topics(bootstrap_servers: str) -> None:
+    """Create required Kafka topics if they do not already exist."""
+    admin = AdminClient({"bootstrap.servers": bootstrap_servers})
+    existing = set(admin.list_topics(timeout=10).topics.keys())
+
+    to_create = []
+    for topic_name in (TOPIC, EVENTS_TOPIC):
+        if topic_name not in existing:
+            to_create.append(NewTopic(topic_name, num_partitions=1, replication_factor=1))
+
+    if not to_create:
+        print(f"Topics {TOPIC!r} and {EVENTS_TOPIC!r} already exist.")
+        return
+
+    results = admin.create_topics(to_create)
+    for topic_name, future in results.items():
+        try:
+            future.result()
+            print(f"Topic {topic_name!r} ready.")
+        except Exception as exc:
+            # Topic may have been created concurrently — not fatal.
+            print(f"Could not create topic {topic_name!r}: {exc}")
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
-    default_bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-
     parser = argparse.ArgumentParser(description="Publish synthetic quality measurements to Kafka.")
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--delay-ms", type=int, default=100)
-    parser.add_argument("--bootstrap-servers", default=default_bootstrap_servers)
+    parser.add_argument("--bootstrap-servers", default=settings.kafka_bootstrap_servers)
     return parser.parse_args()
 
 
-def build_record(index: int) -> dict[str, object]:
+# ─── Record builder ───────────────────────────────────────────────────────────
+
+def build_event(index: int) -> MeasurementEvent:
+    """Build and validate a MeasurementEvent; raises ValidationError if invalid."""
     measured_value = 25.25 if index % 200 == 0 else round(random.normalvariate(25.0, 0.03), 4)
 
-    return {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "part_number": f"PART-{(index % 20) + 1:03d}",
-        "characteristic_name": "diameter",
-        "nominal_value": 25.0,
-        "measured_value": measured_value,
-        "unit": "mm",
-        "operator_id": f"OP-{(index % 5) + 1:03d}",
-        "equipment_id": "CMM-001",
-        "shift": ["A", "B", "C"][index % 3],
-    }
+    return MeasurementEvent(
+        timestamp=datetime.now(UTC),
+        part_number=f"PART-{(index % 20) + 1:03d}",
+        characteristic_name="diameter",
+        nominal_value=25.0,
+        measured_value=measured_value,
+        unit="mm",
+        operator_id=f"OP-{(index % 5) + 1:03d}",
+        equipment_id="CMM-001",
+        shift=["A", "B", "C"][index % 3],
+    )
 
+
+# ─── Delivery callback ────────────────────────────────────────────────────────
 
 def delivery_report(error, message) -> None:
     if error is not None:
         print(f"Delivery failed for record key {message.key()}: {error}")
 
 
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
 def main() -> None:
     args = parse_args()
+
+    ensure_topics(args.bootstrap_servers)
+
     producer = Producer({"bootstrap.servers": args.bootstrap_servers})
     delay_seconds = args.delay_ms / 1000
     start_time = time.perf_counter()
 
     for index in range(1, args.count + 1):
-        record = build_record(index)
+        event = build_event(index)  # ValidationError raised here if invalid
         producer.produce(
             TOPIC,
-            key=record["part_number"],
-            value=json.dumps(record),
+            key=event.part_number,
+            value=event.model_dump_json(),  # Pydantic serialisation (datetime → ISO string)
             callback=delivery_report,
         )
         producer.poll(0)

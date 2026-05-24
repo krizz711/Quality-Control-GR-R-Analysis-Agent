@@ -340,23 +340,96 @@ ANTHROPIC_API_KEY=
 
 The `.env` file is ignored by Git, so it stays local and will not be pushed to GitHub.
 
-## Important Note
+### 24. Created async database connection module
 
-The original requested schema used this for the `measurements` table:
+Created this file:
 
-```sql
-id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+```text
+db/database.py
 ```
 
-TimescaleDB rejected that because a hypertable primary key must include the time partition column.
+The module:
 
-So the final migration uses:
+- loads `.env`
+- reads `DATABASE_URL`
+- creates an async SQLAlchemy engine
+- creates `AsyncSessionLocal`
+- exports `engine`, `AsyncSessionLocal`, and `get_session()`
 
-```sql
-PRIMARY KEY (id, timestamp)
+### 25. Created Kafka-to-database consumer
+
+Created this file:
+
+```text
+agent/consumer.py
 ```
 
-This keeps the UUID ID while making the table valid as a TimescaleDB hypertable.
+The consumer:
+
+- reads `KAFKA_BOOTSTRAP_SERVERS`
+- subscribes to `quality.measurements`
+- uses consumer group `arad-quality-consumer`
+- disables auto commit
+- inserts Kafka measurement messages into the `measurements` table
+- commits the database transaction first
+- commits the Kafka offset only after a successful insert
+- continues running if an individual message fails
+- closes cleanly on `KeyboardInterrupt`
+
+### 26. Fixed consumer timestamp conversion
+
+The Kafka publisher sends timestamps as ISO strings, but `asyncpg` expects a Python `datetime` object for `TIMESTAMPTZ`.
+
+Updated the consumer to convert values like:
+
+```text
+2026-05-24T08:08:26.745123+00:00
+```
+
+into Python `datetime` values before inserting into PostgreSQL.
+
+### 27. Verified Kafka-to-database flow
+
+After checking the stack following `docker compose down`, verified that:
+
+- all Docker services are running
+- `quality.measurements` Kafka topic exists
+- database extensions exist
+- database tables exist
+- MLflow responds on port `5000`
+- pgAdmin responds on port `5050`
+- MLflow setup script still works
+
+Ran an end-to-end test:
+
+```text
+Before count: 40
+After count: 43
+Inserted during test: 3
+```
+
+This confirms the publisher-to-Kafka-to-consumer-to-TimescaleDB flow works.
+
+## Architecture Decisions
+
+### Deferred: Apache Flink
+**Decision**: Flink stream processing deferred to Phase 3.
+**Reason**: Phase 1 uses a simple Kafka consumer with direct TimescaleDB insert.
+Phase 3 will add Flink for windowed SPC computations (1-hour sliding windows,
+Xbar-R calculations across partitioned streams).
+**Impact**: No impact on Phase 1 or Phase 2. GR&R studies read from TimescaleDB
+directly, not from Flink.
+
+### Decision: Stateless agent design
+**Decision**: Each agent invocation is independent. No in-memory state between calls.
+**Reason**: Full audit trail, reproducible results, simpler failure recovery.
+Every GR&R study reads fresh from TimescaleDB on each run.
+
+### Decision: Composite PK on measurements (id, timestamp)
+**Decision**: TimescaleDB hypertable requires timestamp in all unique keys.
+**Reason**: Hypertable partitions by timestamp column. PostgreSQL requires the
+partition key in any primary key or unique constraint.
+**Fix applied**: PRIMARY KEY (id, timestamp) instead of PRIMARY KEY (id).
 
 ## Current Status
 
@@ -371,6 +444,12 @@ MLflow is running and verified.
 The MLflow setup script is created and verified.
 
 The local `.env` file is created and ignored by Git.
+
+The async database module is created.
+
+The Kafka consumer is created and verified.
+
+The full publisher-to-database pipeline is working.
 
 You can view it in pgAdmin under:
 
@@ -413,11 +492,17 @@ http://localhost:5000
 To publish synthetic measurement data, run:
 
 ```powershell
-python scripts\synthetic_publisher.py --count 1000 --delay-ms 100
+poetry run python scripts\synthetic_publisher.py --count 1000 --delay-ms 100
+```
+
+To run the Kafka database consumer, run:
+
+```powershell
+poetry run python -m agent.consumer
 ```
 
 To verify MLflow experiments and create a test run, run:
 
 ```powershell
-python scripts\setup_mlflow.py
+poetry run python scripts\setup_mlflow.py
 ```

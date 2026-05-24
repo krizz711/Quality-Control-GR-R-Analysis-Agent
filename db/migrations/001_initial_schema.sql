@@ -54,3 +54,17 @@ CREATE TABLE quality_violations (
 CREATE INDEX ON measurements (part_number, timestamp DESC);
 CREATE INDEX ON measurements (equipment_id);
 CREATE INDEX ON quality_violations (part_number, timestamp DESC);
+
+CREATE TABLE review_queue (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    study_id UUID NOT NULL REFERENCES grr_studies(id),
+    status VARCHAR(32) DEFAULT 'pending',   -- pending/approved/rejected
+    assigned_to VARCHAR(64),
+    due_at TIMESTAMPTZ,
+    decision_notes TEXT,
+    decided_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON review_queue (status);
+CREATE INDEX ON review_queue (study_id);

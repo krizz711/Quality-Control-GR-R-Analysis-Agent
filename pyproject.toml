@@ -6,7 +6,9 @@ authors = ["Arad Quality Team"]
 readme = "README.md"
 packages = [
     { include = "agent" },
+    { include = "core" },
     { include = "grr" },
+    { include = "schemas" },
     { include = "spc" },
     { include = "api" },
 ]
@@ -39,6 +41,9 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require live Docker services (deselect with '-m not integration')",
+]
 
 [tool.ruff]
 line-length = 100

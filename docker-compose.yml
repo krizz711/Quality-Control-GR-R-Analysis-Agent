@@ -7,6 +7,13 @@ services:
       POSTGRES_DB: arad_quality
       POSTGRES_USER: arad
       POSTGRES_PASSWORD: arad_pass
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arad -d arad_quality"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - arad-network
 
@@ -42,6 +49,11 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
     networks:
       - arad-network
 
@@ -72,10 +84,19 @@ services:
       --default-artifact-root /mlflow/artifacts
     volumes:
       - ./mlflow-artifacts:/mlflow/artifacts
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     depends_on:
-      - timescaledb
+      timescaledb:
+        condition: service_healthy
     networks:
       - arad-network
 
 networks:
   arad-network:
+
+volumes:
+  timescale_data:
