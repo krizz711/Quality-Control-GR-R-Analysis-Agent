@@ -7,6 +7,7 @@ import pytest
 
 from grr.acceptance import AcceptanceLevel, evaluate
 from grr.calculator import GRRResult, grr_anova, grr_xbar_r
+from grr.report_generator import create_pdf
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -30,6 +31,23 @@ def aiag_data() -> pd.DataFrame:
       ]
     }
     return pd.DataFrame(data)
+
+
+@pytest.fixture
+def mock_grr_result() -> GRRResult:
+    return GRRResult(
+        total_grr=18.5,
+        repeatability=0.10,
+        reproducibility=0.08,
+        part_variation=0.40,
+        total_variation=0.50,
+        ndc=4,
+    )
+
+
+@pytest.fixture
+def mock_verdict(mock_grr_result: GRRResult):
+    return evaluate(mock_grr_result)
 
 
 # ─── Calculator tests ───────────────────────────────────────────────────────
@@ -144,3 +162,13 @@ class TestAcceptance:
         verdict = evaluate(bad)
         assert verdict.level == AcceptanceLevel.NOT_ACCEPTABLE
         assert verdict.ndc_adequate is False
+
+
+# ─── Report Generator tests ──────────────────────────────────────────────────
+
+class TestReportGenerator:
+    """Tests for the PDF report generator."""
+
+    def test_create_pdf_returns_bytes(self, mock_grr_result: GRRResult, mock_verdict) -> None:
+        pdf = create_pdf(mock_grr_result, mock_verdict)
+        assert isinstance(pdf, bytes) and len(pdf) > 0
