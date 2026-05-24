@@ -525,3 +525,10 @@ Created the `POST /studies/grr` endpoint combining the full stack:
 - Logs runtime parameters and computed metrics sequentially to `MLflow` under the `grr_studies` experiment.
 - Fixed a trailing timezone-awareness SQLAlchemy mapping issue `(offset-naive vs offset-aware)`.
 - Successfully verified the full data insertion chain!
+
+### 32. Expanded API & ANOVA Method Support
+- Implemented `GET /studies/{id}` endpoint in `api/main.py` to retrieve study results and details directly from PostgreSQL.
+- Added `grr_anova` method to `calculator.py` to support two-way ANOVA analysis for GR&R datasets, specifically to handle scenarios with larger samples ($n > 10$).
+- Handled edge cases by adding fallback error handling for unknown calculator methods.
+- Optimized codebase and resolved Ruff linting warnings by removing unused variables.
+- Configured FastAPI API tests (`tests/test_api_grr.py`) with `pytest` and `httpx` to verify payload submission, database interactions, and MLflow logging.
