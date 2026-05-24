@@ -9,6 +9,9 @@ Run with:
   poetry run pytest -m integration -v
 Skip in CI (unit-only):
   poetry run pytest -m "not integration"
+
+IMPORTANT: Requires the Kafka consumer to be running before executing:
+  poetry run python -m agent.consumer
 """
 
 import asyncio

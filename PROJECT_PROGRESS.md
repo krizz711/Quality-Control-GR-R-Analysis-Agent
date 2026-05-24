@@ -506,3 +506,22 @@ To verify MLflow experiments and create a test run, run:
 ```powershell
 poetry run python scripts\setup_mlflow.py
 ```
+
+### 28. Implemented GR&R Analytics Engine
+Created the `grr_xbar_r` calculator logic following the AIAG MSA 4th Edition methodology, including %GRR, variance components (EV, AV, PV), and NDC calculations. Integrated this with dynamic acceptance logic (`evaluate()`) triggering human reviews for conditional outcomes.
+
+### 29. Created Test Suite for GR&R
+Built robust tests in `test_grr.py` using verified AIAG reference data (3 operators, 10 parts, 2 trials) ensuring standard outputs match exactly 24.29% GR&R. 
+
+### 30. Designed PDF Report Generator
+Implemented `create_pdf()` in `grr/report_generator.py` using `reportlab`. The module generates 2-page professional study reports visualizing variance component breakdowns and dynamically rendering conditional formatting (Green/Yellow/Red) based on the acceptance verdicts.
+
+### 31. Built FastAPI GR&R Endpoint
+Created the `POST /studies/grr` endpoint combining the full stack: 
+- Parses payload to a Pandas DataFrame.
+- Executes `grr_xbar_r` analytics.
+- Inserts results safely into the `grr_studies` PostgreSQL table using `AsyncSessionLocal`.
+- Forwards borderline studies to the `review_queue` table.
+- Logs runtime parameters and computed metrics sequentially to `MLflow` under the `grr_studies` experiment.
+- Fixed a trailing timezone-awareness SQLAlchemy mapping issue `(offset-naive vs offset-aware)`.
+- Successfully verified the full data insertion chain!

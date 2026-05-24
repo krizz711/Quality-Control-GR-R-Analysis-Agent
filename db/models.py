@@ -25,7 +25,7 @@ class Measurement(Base):
     operator_id: Mapped[str | None] = mapped_column(String(64))
     equipment_id: Mapped[str | None] = mapped_column(String(64))
     shift: Mapped[str | None] = mapped_column(String(16))
-    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
     created_by: Mapped[str] = mapped_column(String(64), default="system")
 
 
@@ -47,7 +47,7 @@ class GrrStudy(Base):
     completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_by: Mapped[str | None] = mapped_column(String(64))
     review_notes: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
     created_by: Mapped[str] = mapped_column(String(64), default="system")
 
 
@@ -65,7 +65,7 @@ class QualityViolation(Base):
     lcl: Mapped[float | None] = mapped_column(Float)
     alert_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     acknowledged_by: Mapped[str | None] = mapped_column(String(64))
-    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
 
 
 class ReviewQueue(Base):
@@ -78,7 +78,7 @@ class ReviewQueue(Base):
     due_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     decision_notes: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime.datetime] = mapped_column(default=datetime.datetime.utcnow)
+    created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
 
 
 __all__ = [

@@ -36,6 +36,7 @@ class AcceptanceVerdict:
     ndc: int
     ndc_adequate: bool
     remarks: list[str]
+    requires_human_review: bool = False
 
 
 def evaluate(
@@ -63,10 +64,48 @@ def evaluate(
     -------
     AcceptanceVerdict
     """
-    # TODO: Calculate %GR&R from result.total_grr
-    # TODO: Classify into AcceptanceLevel based on thresholds
-    # TODO: Check ndc >= min_ndc
-    # TODO: Build remarks list with human-readable explanations
-    # TODO: Return AcceptanceVerdict
-    logger.info("evaluate called (stub)")
-    raise NotImplementedError("Acceptance evaluation not yet implemented")
+    # 1. CLASSIFY BY %GRR:
+    if result.total_grr < grr_threshold_accept:
+        level = AcceptanceLevel.ACCEPTABLE
+    elif result.total_grr <= grr_threshold_conditional:
+        level = AcceptanceLevel.CONDITIONAL
+    else:
+        level = AcceptanceLevel.NOT_ACCEPTABLE
+
+    # 2. CHECK NDC:
+    ndc_adequate = result.ndc >= min_ndc
+
+    # 3. BUILD REMARKS LIST:
+    remarks = []
+    remarks.append(f"%GR&R = {result.total_grr:.1f}% — {level.value}")
+    
+    if level == AcceptanceLevel.ACCEPTABLE:
+        remarks.append("Measurement system is suitable for production use.")
+    elif level == AcceptanceLevel.CONDITIONAL:
+        remarks.append("Engineering review required before production use.")
+        dominant = 'repeatability' if result.repeatability > result.reproducibility else 'reproducibility'
+        remarks.append(f"Consider investigating {dominant} as the dominant source.")
+    else:
+        remarks.append("Measurement system must be improved before use.")
+        remarks.append("Investigate equipment calibration and operator technique.")
+        
+    if not ndc_adequate:
+        remarks.append(f"NDC = {result.ndc} — below minimum of {min_ndc}. Cannot distinguish part variation.")
+    else:
+        remarks.append(f"NDC = {result.ndc} — adequate discrimination confirmed.")
+        
+    remarks.append(f"EV (Repeatability) = {result.repeatability:.4f}")
+    remarks.append(f"AV (Reproducibility) = {result.reproducibility:.4f}")
+
+    # 4 & 5. RETURN AcceptanceVerdict
+    verdict = AcceptanceVerdict(
+        level=level,
+        grr_percent=result.total_grr,
+        ndc=result.ndc,
+        ndc_adequate=ndc_adequate,
+        remarks=remarks,
+        requires_human_review=(level == AcceptanceLevel.CONDITIONAL)
+    )
+    
+    logger.info("evaluate complete, verdict: %s", level.value)
+    return verdict

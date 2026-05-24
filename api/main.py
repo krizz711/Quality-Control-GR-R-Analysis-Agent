@@ -13,8 +13,18 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import uuid
+import pandas as pd
+import mlflow
+from datetime import datetime, timezone
+
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
+
+from db.database import AsyncSessionLocal
+from db.models import GrrStudy, ReviewQueue
+from grr.calculator import grr_xbar_r
+from grr.acceptance import evaluate
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +47,8 @@ class GRRStudyRequest(BaseModel):
     )
     method: str = Field("xbar_r", pattern="^(xbar_r|anova)$")
     tolerance: float | None = None
+    equipment_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GRRStudyResponse(BaseModel):
@@ -93,15 +105,90 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
     """
     Submit measurement data and run a GR&R study.
     """
-    # TODO: Convert body.measurements to a pandas DataFrame
-    # TODO: Call grr.calculator.grr_xbar_r() or grr_anova() based on body.method
-    # TODO: Evaluate acceptance via grr.acceptance.evaluate()
-    # TODO: Persist results to database
-    # TODO: Return GRRStudyResponse
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="GR&R study endpoint not yet implemented",
-    )
+    try:
+        # 1. Convert body.measurements to DataFrame
+        df = pd.DataFrame(body.measurements)
+        if "value" in df.columns:
+            df = df.rename(columns={"value": "measurement"})
+
+        # 2. Call the appropriate calculator
+        if body.method == "xbar_r":
+            result = grr_xbar_r(df, tolerance=body.tolerance)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="ANOVA not yet implemented"
+            )
+
+        # 3. Evaluate results
+        verdict = evaluate(result)
+
+        # 4. Generate study_id
+        study_id_str = str(uuid.uuid4())
+        study_id = uuid.UUID(study_id_str)
+
+        # 5. Save to grr_studies using AsyncSessionLocal
+        equipment_id = body.equipment_id or (body.part_ids[0] if body.part_ids else "unknown")
+        characteristic_name = body.metadata.get("characteristic_name", "unknown")
+        now = datetime.now(timezone.utc)
+        
+        async with AsyncSessionLocal() as session:
+            study = GrrStudy(
+                id=study_id,
+                equipment_id=equipment_id,
+                characteristic_name=characteristic_name,
+                status=verdict.level.value,
+                ev=result.repeatability,
+                av=result.reproducibility,
+                pv=result.part_variation,
+                grr_pct=result.total_grr,
+                ndc=result.ndc,
+                acceptance_decision=verdict.level.value,
+                started_at=now,
+                completed_at=now
+            )
+            session.add(study)
+
+            # 6. Insert into review_queue if required
+            if verdict.requires_human_review:
+                review_item = ReviewQueue(
+                    study_id=study_id,
+                    status="pending"
+                )
+                session.add(review_item)
+
+            await session.commit()
+
+        # 7. Log to MLflow
+        mlflow.set_experiment("grr_studies")
+        with mlflow.start_run(run_name=study_id_str):
+            mlflow.log_params({
+                "method": body.method,
+                "n_parts": len(body.part_ids),
+                "n_operators": len(body.operator_ids)
+            })
+            mlflow.log_metrics({
+                "grr_pct": result.total_grr,
+                "ev": result.repeatability,
+                "av": result.reproducibility,
+                "ndc": result.ndc
+            })
+            mlflow.set_tag("acceptance", verdict.level.value)
+
+        # 8. Return response
+        return GRRStudyResponse(
+            study_id=study_id_str,
+            grr_percent=result.total_grr,
+            acceptance=verdict.level.value,
+            ndc=result.ndc,
+            details=result.details or {}
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
 
 
 @app.get("/studies/{study_id}", response_model=GRRStudyResponse, tags=["grr"])
