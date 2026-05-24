@@ -177,7 +177,6 @@ def grr_anova(
         raise ValueError("Each operator-part combination must have the same number of trials.")
 
     grand_mean = data[measurement_col].mean()
-    N = n_parts * n_operators * k
 
     # 2. COMPUTE CELL MEANS AND MARGINAL MEANS
     cell_means = data.groupby([operator_col, part_col])[measurement_col].mean()
