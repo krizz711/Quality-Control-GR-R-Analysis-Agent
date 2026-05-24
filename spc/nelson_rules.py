@@ -47,10 +47,12 @@ def rule_4_fourteen_alternating(values: np.ndarray) -> list[int]:
     """Rule 4: Fourteen consecutive points alternating up and down."""
     violations: list[int] = []
     for i in range(13, len(values)):
-        window = values[i - 13 : i + 1]  # 14 points
-        diffs = np.sign(np.diff(window))
-        alternating = all(diffs[j] != diffs[j + 1] for j in range(len(diffs) - 1))
-        if alternating and len(set(diffs)) > 1:
+        window = values[i - 13 : i + 1]
+        diffs = np.diff(window)
+        # Flat segments are not alternating; compare raw diffs, not np.sign.
+        if np.any(diffs == 0):
+            continue
+        if np.all(diffs[:-1] * diffs[1:] < 0):
             violations.append(i)
     return violations
 

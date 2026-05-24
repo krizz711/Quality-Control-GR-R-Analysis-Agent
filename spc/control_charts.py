@@ -61,10 +61,24 @@ def xbar_r_chart(
           6: 2.004, 7: 1.924, 8: 1.864, 9: 1.816, 10: 1.777}
 
     grouped = data.groupby(subgroup_col)[value_col]
+    subgroup_counts = grouped.count()
+    if subgroup_counts.empty:
+        raise ValueError("No subgroups found in data")
+    if subgroup_counts.nunique() != 1:
+        sizes = subgroup_counts.value_counts().to_dict()
+        raise ValueError(
+            f"Inconsistent subgroup sizes: {sizes}. "
+            "All subgroups must have the same number of values."
+        )
+
+    n = int(subgroup_counts.iloc[0])
+    if n not in A2:
+        raise ValueError(
+            f"Subgroup size {n} is not supported (must be between 2 and 10)"
+        )
+
     subgroup_means = grouped.mean()
     subgroup_ranges = grouped.max() - grouped.min()
-
-    n = int(grouped.count().iloc[0])  # subgroup size (assumed constant)
 
     x_double_bar = float(subgroup_means.mean())
     r_bar = float(subgroup_ranges.mean())

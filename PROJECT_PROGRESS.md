@@ -558,3 +558,10 @@ Created the `POST /studies/grr` endpoint combining the full stack:
 - Removed all `@pytest.mark.skip` decorators and verified a clean, passing test run.
 - Completed e2e live request verification of the SPC endpoint.
 
+### 37. SPC Bug Fixes & Expanded Test Coverage
+- **Rule 4:** Fixed fragile alternating detection — use raw `diff` products instead of `np.sign` cross-products; skip flat (zero-delta) segments.
+- **API Nelson evaluation:** Confirmed rules run on chart points (`primary_chart.points`) with chart `cl`/`sigma`, not raw request values; partial trailing subgroups truncated before `xbar_r` chart build.
+- **`xbar_r_chart` validation:** Reject inconsistent subgroup sizes and unsupported sizes outside AIAG range (2–10); API enforces 2–10 for `xbar_r` only so `p` charts can use larger sample sizes.
+- **Tests:** Added `TestPChart`, Nelson rules 4–8 unit tests, subgroup validation tests, and tightened false-positive Monte Carlo (chart-aligned Xbar data, threshold 0.20 → 0.10).
+- **API tests:** Added `tests/test_api_spc.py` covering `xbar_r`, `i_mr`, `p`, partial-subgroup truncation, Rule 1 persistence, and invalid subgroup size (26 SPC tests passing).
+

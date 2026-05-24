@@ -249,8 +249,15 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
             from spc.control_charts import xbar_r_chart
 
             n = body.subgroup_size
+            if n < 2 or n > 10:
+                raise ValueError(
+                    f"subgroup_size {n} not supported for xbar_r (must be 2–10)"
+                )
+            n_full = (len(body.values) // n) * n
+            values = np.array(body.values[:n_full])  # drop partial last subgroup
+            
             rows = [{"subgroup": i // n, "value": v}
-                    for i, v in enumerate(body.values)]
+                    for i, v in enumerate(values)]
             df = pd.DataFrame(rows)
             xbar, r_chart = xbar_r_chart(df)
             primary_chart = xbar
@@ -268,7 +275,9 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
             raise ValueError(f"Unsupported chart_type: {body.chart_type}")
 
         # ── 2. Nelson rules on the primary chart points ──────────────────
-        chart_values = np.array(primary_chart.points) if primary_chart.points else values
+        if not primary_chart.points:
+            raise ValueError("Chart produced no points — check input data")
+        chart_values = np.array(primary_chart.points)
         nelson_violations = evaluate_all_rules(chart_values, primary_chart.limits.cl, sigma)
 
         # ── 3. Persist Rule 1 violations (critical) ──────────────────────
@@ -281,7 +290,7 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
                         timestamp=now,
                         violation_type="nelson_rule_1",
                         severity="critical",
-                        measured_value=float(values[idx]),
+                        measured_value=float(chart_values[idx]),
                         ucl=primary_chart.limits.ucl,
                         lcl=primary_chart.limits.lcl,
                         alert_sent=False,
