@@ -1,12 +1,19 @@
-import urllib.request
+"""
+Smoke test — run a GR&R study through QualityOrchestrator.
+
+Usage:
+  poetry run python scripts/smoke_test_orchestrator_grr.py
+"""
+
+import asyncio
 import json
 
-url = "http://localhost:8000/studies/grr"
-data = {
-    "part_ids": ["P1", "P2", "P3", "P4", "P5"],
-    "operator_ids": ["A", "B", "C"],
+from agent.orchestrator import QualityOrchestrator
+
+event = {
+    "study_type": "grr",
     "equipment_id": "CMM-001",
-    "metadata": {"characteristic_name": "diameter"},
+    "characteristic_name": "diameter",
     "measurements": [
         {"part": "P1", "operator": "A", "value": 0.29},
         {"part": "P1", "operator": "A", "value": 0.41},
@@ -25,16 +32,16 @@ data = {
         {"part": "P2", "operator": "C", "value": -1.38},
         {"part": "P2", "operator": "C", "value": -1.13},
         {"part": "P3", "operator": "C", "value": 0.88},
-        {"part": "P3", "operator": "C", "value": 1.09}
+        {"part": "P3", "operator": "C", "value": 1.09},
     ],
-    "method": "xbar_r"
 }
 
-req = urllib.request.Request(url, json.dumps(data).encode('utf-8'), {'Content-Type': 'application/json'})
-try:
-    with urllib.request.urlopen(req) as res:
-        print("Status Code:", res.getcode())
-        print("Response:", res.read().decode('utf-8'))
-except urllib.error.HTTPError as e:
-    print("HTTP Error:", e.code)
-    print("Error Body:", e.read().decode('utf-8'))
+
+async def main() -> None:
+    orchestrator = QualityOrchestrator()
+    result = await orchestrator.handle_measurement_event(event)
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

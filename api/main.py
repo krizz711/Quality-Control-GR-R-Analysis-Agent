@@ -6,6 +6,8 @@ Endpoints:
   - GET  /studies/{id}       — Retrieve study results
   - POST /spc/analyze        — Run SPC analysis on a dataset
   - GET  /health             — Health check
+  - GET  /reviews            — List pending GR&R reviews
+  - PATCH /reviews/{id}      — Approve or reject a review
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from db.database import AsyncSessionLocal
 from db.models import GrrStudy, QualityViolation, ReviewQueue
@@ -87,6 +90,14 @@ class HealthResponse(BaseModel):
 
     status: str = "ok"
     version: str = "0.1.0"
+
+
+class ReviewDecision(BaseModel):
+    """Request body for approving or rejecting a pending GR&R review."""
+
+    decision: str
+    notes: str = ""
+    decided_by: str
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -318,3 +329,97 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         )
+
+
+@app.get("/reviews", tags=["reviews"])
+async def list_pending_reviews() -> list[dict[str, Any]]:
+    """Returns all pending review_queue rows for the quality engineer dashboard."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT rq.id, rq.study_id, rq.status, rq.assigned_to,
+                       rq.due_at, rq.created_at,
+                       gs.grr_pct, gs.ndc, gs.equipment_id, gs.characteristic_name
+                FROM review_queue rq
+                JOIN grr_studies gs ON gs.id = rq.study_id
+                WHERE rq.status = 'pending'
+                ORDER BY rq.created_at DESC
+            """)
+        )
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
+
+
+@app.patch("/reviews/{review_id}", tags=["reviews"])
+async def decide_review(review_id: str, body: ReviewDecision) -> dict[str, Any]:
+    """
+    Quality engineer approves or rejects a CONDITIONAL GR&R study.
+    Updates both review_queue and grr_studies tables.
+    """
+    if body.decision not in ("approved", "rejected"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="decision must be 'approved' or 'rejected'",
+        )
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT * FROM review_queue WHERE id = :id"),
+            {"id": review_id},
+        )
+        review = result.mappings().first()
+
+        if not review:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Review {review_id} not found",
+            )
+
+        if review["status"] != "pending":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Review already decided: {review['status']}",
+            )
+
+        await session.execute(
+            text("""
+                UPDATE review_queue
+                SET status = :decision,
+                    decision_notes = :notes,
+                    decided_at = NOW(),
+                    assigned_to = :decided_by
+                WHERE id = :id
+            """),
+            {
+                "decision": body.decision,
+                "notes": body.notes,
+                "decided_by": body.decided_by,
+                "id": review_id,
+            },
+        )
+
+        await session.execute(
+            text("""
+                UPDATE grr_studies
+                SET status = :decision,
+                    reviewed_by = :decided_by,
+                    review_notes = :notes
+                WHERE id = :study_id
+            """),
+            {
+                "decision": body.decision,
+                "decided_by": body.decided_by,
+                "notes": body.notes,
+                "study_id": str(review["study_id"]),
+            },
+        )
+
+        await session.commit()
+
+        return {
+            "review_id": review_id,
+            "study_id": str(review["study_id"]),
+            "decision": body.decision,
+            "decided_by": body.decided_by,
+            "message": f"Study {body.decision} successfully",
+        }

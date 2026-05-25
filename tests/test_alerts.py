@@ -1,52 +1,75 @@
-"""Tests for the alerting / notification pipeline."""
+"""Tests for Slack and JIRA alerting."""
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 import pytest
 
-from agent.orchestrator import AnalysisResult, MeasurementEvent, QualityOrchestrator
+from agent.alerts import create_jira_ticket, send_slack_alert
 
 
-# ─── Alert tests ─────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_slack_sends_correct_payload(mock_slack_client: AsyncMock) -> None:
+    result = await send_slack_alert(
+        "https://fake.webhook",
+        "test msg",
+        "critical",
+        "STUDY-1",
+    )
 
-class TestAlerts:
-    """Tests for alert dispatch logic in the orchestrator."""
+    mock_slack_client.post.assert_awaited_once()
+    _, kwargs = mock_slack_client.post.await_args
+    payload = kwargs["json"]
+    assert "attachments" in payload
+    assert payload["attachments"][0]["color"] == "#ff0000"
+    assert "STUDY-1" in payload["attachments"][0]["text"]
+    assert result is True
 
-    @pytest.fixture
-    def orchestrator(self) -> QualityOrchestrator:
-        return QualityOrchestrator()
 
-    @pytest.mark.skip(reason="Stub — not yet implemented")
-    @pytest.mark.asyncio
-    async def test_alert_sent_on_failure(self, orchestrator: QualityOrchestrator) -> None:
-        """An out-of-spec result should trigger an alert."""
-        event = MeasurementEvent(
-            part_id="P001",
-            operator_id="OP-A",
-            values=[10.0, 10.5, 11.0],
-            metadata={"study_type": "grr"},
-        )
-        result = await orchestrator.handle_event(event)
-        # TODO: Mock _send_alert and verify it was called when result.passed is False
-        assert isinstance(result, AnalysisResult)
+@pytest.mark.asyncio
+async def test_slack_warning_color(mock_slack_client: AsyncMock) -> None:
+    await send_slack_alert("https://fake.webhook", "test msg", "warning")
 
-    @pytest.mark.skip(reason="Stub — not yet implemented")
-    @pytest.mark.asyncio
-    async def test_no_alert_on_pass(self, orchestrator: QualityOrchestrator) -> None:
-        """A passing result should NOT trigger an alert."""
-        event = MeasurementEvent(
-            part_id="P002",
-            operator_id="OP-B",
-            values=[10.0, 10.0, 10.0],
-            metadata={"study_type": "grr"},
-        )
-        result = await orchestrator.handle_event(event)
-        # TODO: Mock _send_alert and verify it was NOT called
-        assert isinstance(result, AnalysisResult)
+    _, kwargs = mock_slack_client.post.await_args
+    payload = kwargs["json"]
+    assert payload["attachments"][0]["color"] == "#ffcc00"
 
-    @pytest.mark.skip(reason="Stub — not yet implemented")
-    @pytest.mark.asyncio
-    async def test_slack_webhook_format(self, orchestrator: QualityOrchestrator) -> None:
-        """Verify the Slack webhook payload structure."""
-        # TODO: Mock httpx/aiohttp POST, call _send_alert, inspect payload
-        pass
+
+@pytest.mark.asyncio
+async def test_slack_empty_webhook_returns_none() -> None:
+    with patch("agent.alerts.httpx.AsyncClient") as mock_ac:
+        result = await send_slack_alert("", "msg", "info")
+        mock_ac.assert_not_called()
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_send_alert_does_not_raise_on_http_error(
+    mock_slack_client: AsyncMock,
+) -> None:
+    request = httpx.Request("POST", "https://fake.webhook")
+    response = httpx.Response(500, request=request)
+    http_error = httpx.HTTPStatusError(
+        "Server error",
+        request=request,
+        response=response,
+    )
+    error_response = MagicMock()
+    error_response.raise_for_status.side_effect = http_error
+    mock_slack_client.post = AsyncMock(return_value=error_response)
+
+    result = await send_slack_alert("https://fake.webhook", "msg", "info")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_jira_returns_none_when_not_configured() -> None:
+    with patch("agent.alerts.httpx.AsyncClient") as mock_ac:
+        result = await create_jira_ticket("", "", "", "QUAL", "summary", "desc")
+        mock_ac.assert_not_called()
+
+    assert result is None
