@@ -33,7 +33,7 @@ const container = {
 };
 const item = {
   hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } },
 };
 
 const SPCTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { value: number; violation?: string; index: number } }> }) => {
@@ -160,21 +160,23 @@ function ControlChartCard({ chart, expanded, onExpand }: { chart: SPCChart; expa
               dataKey="value"
               stroke="var(--accent)"
               strokeWidth={1.5}
-              dot={(props: { cx: number; cy: number; payload: { violation?: string }; index: number }) => {
-                const isViolation = props.payload.violation;
+              dot={(props) => {
+                const { cx, cy, payload, index } = props;
+                if (typeof cx !== "number" || typeof cy !== "number") return null;
+                const isViolation = payload?.violation;
                 if (isViolation) {
                   return (
-                    <g key={props.index}>
-                      <circle cx={props.cx} cy={props.cy} r={6} fill="var(--critical)" fillOpacity={0.2} stroke="none" />
-                      <circle cx={props.cx} cy={props.cy} r={3.5} fill="var(--critical)" stroke="var(--bg-surface)" strokeWidth={1.5} />
+                    <g key={index}>
+                      <circle cx={cx} cy={cy} r={6} fill="var(--critical)" fillOpacity={0.2} stroke="none" />
+                      <circle cx={cx} cy={cy} r={3.5} fill="var(--critical)" stroke="var(--bg-surface)" strokeWidth={1.5} />
                     </g>
                   );
                 }
                 return (
                   <circle
-                    key={props.index}
-                    cx={props.cx}
-                    cy={props.cy}
+                    key={index}
+                    cx={cx}
+                    cy={cy}
                     r={2}
                     fill="var(--accent)"
                     stroke="var(--bg-surface)"

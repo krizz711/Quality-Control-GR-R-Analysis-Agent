@@ -23,7 +23,7 @@ export interface GRRStudyRequest {
 
 export interface GRRStudyResponse {
   study_id: string;
-  grr_percent: float;
+  grr_percent: number;
   acceptance: 'acceptable' | 'conditional' | 'not_acceptable';
   ndc: number;
   details?: Record<string, unknown>;
