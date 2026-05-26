@@ -33,7 +33,7 @@ const container = {
 };
 const item = {
   hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } },
 };
 
 const SPCTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { value: number; violation?: string; index: number } }> }) => {
@@ -160,8 +160,11 @@ function ControlChartCard({ chart, expanded, onExpand }: { chart: SPCChart; expa
               dataKey="value"
               stroke="var(--accent)"
               strokeWidth={1.5}
-              dot={(props: { cx: number; cy: number; payload: { violation?: string }; index: number }) => {
-                const isViolation = props.payload.violation;
+              dot={(props) => {
+                if (props.cx == null || props.cy == null) {
+                  return null;
+                }
+                const isViolation = (props.payload as { violation?: string })?.violation;
                 if (isViolation) {
                   return (
                     <g key={props.index}>
