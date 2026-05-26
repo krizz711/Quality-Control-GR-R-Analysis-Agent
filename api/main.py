@@ -22,7 +22,7 @@ import pandas as pd
 import mlflow
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, status, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, status, Depends, Header
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
@@ -41,18 +41,43 @@ setup_logging(level=settings.log_level)
 
 logger = logging.getLogger(__name__)
 
-async def verify_key(x_api_key: str = Header(...)):
-    if x_api_key != settings.api_auth_key:
+from fastapi.middleware.cors import CORSMiddleware
+
+_PUBLIC_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
+
+
+async def verify_key(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+) -> None:
+    """Skip auth for health/metrics, OpenAPI, and CORS preflight."""
+    if request.method == "OPTIONS" or request.url.path in _PUBLIC_PATHS:
+        return
+    if not x_api_key or x_api_key != settings.api_auth_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Could not validate API key",
         )
+
+
+def _cors_origins() -> list[str]:
+    return [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+
 
 app = FastAPI(
     title="Arad Quality Agent API",
     description="Manufacturing quality control — GR&R analysis, SPC monitoring, and intelligent alerting.",
     version="0.1.0",
     dependencies=[Depends(verify_key)],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(ai_router)
@@ -186,6 +211,22 @@ class ReviewQueueResponse(BaseModel):
     ndc: int | None = None
     equipment_id: str
     characteristic_name: str
+
+
+# ─── Quality violations (alerts) ─────────────────────────────────────────────
+
+class QualityViolationResponse(BaseModel):
+    id: uuid.UUID
+    timestamp: datetime
+    part_number: str | None = None
+    characteristic_name: str | None = None
+    violation_type: str | None = None
+    severity: str | None = None
+    measured_value: float | None = None
+    ucl: float | None = None
+    lcl: float | None = None
+    alert_sent: bool
+    acknowledged_by: str | None = None
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
@@ -528,3 +569,58 @@ async def decide_review(review_id: str, body: ReviewDecision) -> dict[str, Any]:
             "decided_by": body.decided_by,
             "message": f"Study {body.decision} successfully",
         }
+
+
+@app.get("/violations", response_model=list[QualityViolationResponse], tags=["alerts"])
+async def list_quality_violations(limit: int = 100, only_unack: bool = True) -> list[QualityViolationResponse]:
+    """List recent quality violations for the dashboard alert feed."""
+    limit = max(1, min(limit, 500))
+    where = "WHERE acknowledged_by IS NULL" if only_unack else ""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(f"""
+                SELECT id, timestamp, part_number, characteristic_name,
+                       violation_type, severity, measured_value, ucl, lcl,
+                       alert_sent, acknowledged_by
+                FROM quality_violations
+                {where}
+                ORDER BY timestamp DESC
+                LIMIT :limit
+            """),
+            {"limit": limit},
+        )
+        rows = result.mappings().all()
+        return [QualityViolationResponse.model_validate(row) for row in rows]
+
+
+@app.patch("/violations/{violation_id}/ack", tags=["alerts"])
+async def acknowledge_violation(violation_id: str, acknowledged_by: str = "quality-engineer") -> dict[str, Any]:
+    """Acknowledge a violation (audit trail field: acknowledged_by)."""
+    try:
+        vid = uuid.UUID(violation_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid violation ID format")
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT id, acknowledged_by FROM quality_violations WHERE id = :id"),
+            {"id": str(vid)},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Violation not found")
+
+        if row["acknowledged_by"] is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Violation already acknowledged")
+
+        await session.execute(
+            text("""
+                UPDATE quality_violations
+                SET acknowledged_by = :ack_by
+                WHERE id = :id
+            """),
+            {"ack_by": acknowledged_by, "id": str(vid)},
+        )
+        await session.commit()
+
+    return {"violation_id": str(vid), "acknowledged_by": acknowledged_by, "message": "Acknowledged"}

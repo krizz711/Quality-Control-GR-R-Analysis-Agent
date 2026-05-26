@@ -19,6 +19,7 @@ import {
   Gauge,
 } from "lucide-react";
 import { exampleChat, type ChatMessage } from "@/lib/mock-data";
+import { chatWithAgent } from "@/lib/hooks";
 
 const container = {
   hidden: { opacity: 0 },
@@ -150,25 +151,8 @@ export default function ChatPage() {
           content: m.content
         }));
 
-      // Call the FastAPI backend /chat endpoint
-      const response = await fetch("http://localhost:8000/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": "dev-key-123", // Using a dummy dev key or whatever is configured
-        },
-        body: JSON.stringify({
-          question: userText,
-          conversation_history: history
-        }),
-      });
+      const data = (await chatWithAgent(userText, history)) as { answer?: string };
 
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-      }
-
-      const data = await response.json();
-      
       const aiMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
         role: "assistant",
@@ -265,7 +249,7 @@ export default function ChatPage() {
               key={msg.id}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
               className={`flex gap-3 max-w-3xl ${msg.role === "user" ? "ml-auto flex-row-reverse" : ""}`}
             >
               {/* Avatar */}

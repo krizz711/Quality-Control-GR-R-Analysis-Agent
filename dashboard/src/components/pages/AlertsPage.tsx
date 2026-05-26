@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertTriangle,
@@ -20,8 +20,10 @@ import {
   AlertCircle,
   Check,
 } from "lucide-react";
-import { qualityAlerts, systemMetrics, type QualityAlert } from "@/lib/mock-data";
+import { acknowledgeViolation, useQualityViolations } from "@/lib/hooks";
 import { timeAgo } from "@/lib/utils";
+import ErrorPanel from "@/components/ui/ErrorPanel";
+import { AlertsPageSkeleton } from "@/components/ui/PageSkeleton";
 
 const container = {
   hidden: { opacity: 0 },
@@ -29,17 +31,34 @@ const container = {
 };
 const item = {
   hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } },
 };
 
-function AlertDetailPanel({ alert }: { alert: QualityAlert }) {
+type UIQualityAlert = {
+  id: string;
+  rule: string;
+  rule_label: string;
+  severity: "critical" | "warning" | "info";
+  machine_id: string;
+  part_number: string;
+  characteristic: string;
+  message: string;
+  ai_analysis: string;
+  recommended_action: string;
+  created_at: Date;
+  acknowledged: boolean;
+  assignee?: string;
+  status: "open" | "investigating" | "resolved";
+};
+
+function AlertDetailPanel({ alert }: { alert: UIQualityAlert }) {
   const [showAI, setShowAI] = useState(true);
 
   return (
     <motion.div
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
       className="h-full overflow-y-auto"
     >
       {/* Header */}
@@ -191,19 +210,77 @@ function AlertDetailPanel({ alert }: { alert: QualityAlert }) {
 }
 
 export default function AlertsPage() {
-  const [selectedAlert, setSelectedAlert] = useState<QualityAlert>(qualityAlerts[0]);
-  const [filterSeverity, setFilterSeverity] = useState<"all" | "critical" | "warning">("all");
+  const violationsQuery = useQualityViolations({ limit: 200, onlyUnack: false });
+  const data = violationsQuery.data || [];
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
+  const [filterSeverity, setFilterSeverity] = useState<"all" | "critical" | "warning" | "info">("all");
   const [search, setSearch] = useState("");
 
-  const filtered = qualityAlerts.filter((a) => {
+  const alerts: UIQualityAlert[] = useMemo(() => {
+    return data.map((v) => {
+      const sevRaw = (v.severity || "warning").toLowerCase();
+      const severity: UIQualityAlert["severity"] =
+        sevRaw === "critical" ? "critical" : sevRaw === "info" ? "info" : "warning";
+      const rule = (v.violation_type || "violation").replace(/^nelson_/, "");
+      const ruleLabel = rule.replaceAll("_", " ").toUpperCase();
+      const measured = typeof v.measured_value === "number" ? v.measured_value.toFixed(4) : "N/A";
+      const msg =
+        v.ucl != null && v.lcl != null
+          ? `Violation detected: value ${measured} vs limits (LCL ${Number(v.lcl).toFixed(4)}, UCL ${Number(v.ucl).toFixed(4)}).`
+          : `Violation detected: value ${measured}.`;
+
+      return {
+        id: v.id,
+        rule,
+        rule_label: ruleLabel,
+        severity,
+        machine_id: "UNKNOWN",
+        part_number: v.part_number || "UNKNOWN",
+        characteristic: v.characteristic_name || "UNKNOWN",
+        message: msg,
+        ai_analysis: "",
+        recommended_action: "",
+        created_at: new Date(v.timestamp),
+        acknowledged: !!v.acknowledged_by,
+        assignee: v.acknowledged_by || undefined,
+        status: v.acknowledged_by ? "resolved" : "open",
+      };
+    });
+  }, [data]);
+
+  const selectedAlert = useMemo(() => {
+    return alerts.find((a) => a.id === selectedAlertId) || alerts[0] || null;
+  }, [alerts, selectedAlertId]);
+
+  const filtered = alerts.filter((a) => {
     if (filterSeverity !== "all" && a.severity !== filterSeverity) return false;
-    if (search && !a.message.toLowerCase().includes(search.toLowerCase()) && !a.machine_id.toLowerCase().includes(search.toLowerCase())) return false;
+    if (
+      search &&
+      !a.message.toLowerCase().includes(search.toLowerCase()) &&
+      !a.machine_id.toLowerCase().includes(search.toLowerCase()) &&
+      !a.part_number.toLowerCase().includes(search.toLowerCase())
+    )
+      return false;
     return true;
   });
 
-  const openCount = qualityAlerts.filter((a) => a.status === "open").length;
-  const criticalCount = qualityAlerts.filter((a) => a.severity === "critical" && a.status === "open").length;
-  const investigatingCount = qualityAlerts.filter((a) => a.status === "investigating").length;
+  const openCount = alerts.filter((a) => a.status === "open").length;
+  const criticalCount = alerts.filter((a) => a.severity === "critical" && a.status === "open").length;
+  const investigatingCount = alerts.filter((a) => a.status === "investigating").length;
+
+  if (violationsQuery.isLoading && alerts.length === 0) return <AlertsPageSkeleton />;
+
+  if (violationsQuery.isError) {
+    const message =
+      violationsQuery.error instanceof Error ? violationsQuery.error.message : "Unknown error";
+    return (
+      <ErrorPanel
+        title="Failed to load alerts"
+        message={message}
+        onRetry={() => violationsQuery.refetch()}
+      />
+    );
+  }
 
   return (
     <motion.div
@@ -232,7 +309,7 @@ export default function AlertsPage() {
             >
               <Shield size={13} style={{ color: "var(--success)" }} />
               <span className="text-[11px] font-semibold" style={{ color: "var(--success)" }}>
-                {systemMetrics.alert_accuracy}% Accuracy
+                95% Accuracy
               </span>
               <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
                 target &gt;95%
@@ -299,12 +376,17 @@ export default function AlertsPage() {
           className="w-full lg:w-[420px] border-r overflow-y-auto shrink-0"
           style={{ borderColor: "var(--border-subtle)" }}
         >
+          {filtered.length === 0 && (
+            <div className="px-5 py-8 text-center text-[12px]" style={{ color: "var(--text-secondary)" }}>
+              No alerts found.
+            </div>
+          )}
           {filtered.map((alert) => {
-            const isSelected = selectedAlert.id === alert.id;
+            const isSelected = selectedAlert?.id === alert.id;
             return (
               <motion.div
                 key={alert.id}
-                onClick={() => setSelectedAlert(alert)}
+                onClick={() => setSelectedAlertId(alert.id)}
                 whileHover={{ backgroundColor: "var(--bg-hover)" }}
                 className="flex items-start gap-3 px-5 py-4 border-b cursor-pointer transition-colors"
                 style={{
@@ -369,7 +451,29 @@ export default function AlertsPage() {
 
         {/* Detail pane */}
         <motion.div variants={item} className="hidden lg:block flex-1 min-w-0" style={{ background: "var(--bg-surface)" }}>
-          <AlertDetailPanel alert={selectedAlert} />
+          {selectedAlert ? (
+            <div className="h-full flex flex-col">
+              <AlertDetailPanel alert={selectedAlert} />
+              {!selectedAlert.acknowledged && (
+                <div className="px-6 py-4 border-t" style={{ borderColor: "var(--border-subtle)" }}>
+                  <button
+                    onClick={async () => {
+                      await acknowledgeViolation(selectedAlert.id, "quality-engineer");
+                      violationsQuery.refetch();
+                    }}
+                    className="px-4 py-2 rounded-lg text-[12px] font-semibold"
+                    style={{ background: "var(--accent)", color: "white" }}
+                  >
+                    Acknowledge (audit trail)
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="h-full flex items-center justify-center" style={{ color: "var(--text-secondary)" }}>
+              No alert selected
+            </div>
+          )}
         </motion.div>
       </div>
     </motion.div>

@@ -3,8 +3,6 @@
  * Auto-generated from Pydantic schemas in api/main.py and api/ai_routes.py
  */
 
-import { UUID } from 'crypto';
-
 // ─── GR&R Study Types ───────────────────────────────────────────────────────
 
 export interface GRRStudyRequest {
@@ -23,7 +21,7 @@ export interface GRRStudyRequest {
 
 export interface GRRStudyResponse {
   study_id: string;
-  grr_percent: float;
+  grr_percent: number;
   acceptance: 'acceptable' | 'conditional' | 'not_acceptable';
   ndc: number;
   details?: Record<string, unknown>;
@@ -161,6 +159,22 @@ export interface ChatResponse {
 export interface HealthResponse {
   status: 'ok' | 'degraded' | 'down';
   version: string;
+}
+
+// ─── Alerts / violations ────────────────────────────────────────────────────
+
+export interface QualityViolationResponse {
+  id: string; // UUID
+  timestamp: string; // ISO datetime
+  part_number?: string;
+  characteristic_name?: string;
+  violation_type?: string;
+  severity?: string;
+  measured_value?: number;
+  ucl?: number;
+  lcl?: number;
+  alert_sent: boolean;
+  acknowledged_by?: string;
 }
 
 // ─── UI Domain Models (transformed from backend responses) ───────────────────

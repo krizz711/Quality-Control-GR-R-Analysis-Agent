@@ -21,7 +21,7 @@ const navItems = [
   { id: "dashboard", label: "Overview", icon: LayoutDashboard },
   { id: "grr", label: "GR&R Studies", icon: FlaskConical },
   { id: "spc", label: "SPC Monitor", icon: Activity },
-  { id: "alerts", label: "Alert Inbox", icon: AlertTriangle, badge: 3 },
+  { id: "alerts", label: "Alert Inbox", icon: AlertTriangle },
   { id: "chat", label: "AI Copilot", icon: MessageSquare },
 ];
 
@@ -31,7 +31,7 @@ const bottomItems = [
 ];
 
 export default function Sidebar() {
-  const { sidebarCollapsed, toggleSidebar, activePage, setActivePage } = useAppStore();
+  const { sidebarCollapsed, toggleSidebar, activePage, setActivePage, notificationCount } = useAppStore();
 
   return (
     <motion.aside
@@ -118,6 +118,7 @@ export default function Sidebar() {
 
         {navItems.map((item) => {
           const isActive = activePage === item.id;
+          const badgeCount = item.id === "alerts" ? notificationCount : 0;
           return (
             <motion.button
               key={item.id}
@@ -158,17 +159,17 @@ export default function Sidebar() {
                   </motion.span>
                 )}
               </AnimatePresence>
-              {item.badge && !sidebarCollapsed && (
+              {badgeCount > 0 && !sidebarCollapsed && (
                 <motion.span
                   initial={{ scale: 0 }}
                   animate={{ scale: 1 }}
                   className="relative z-10 ml-auto flex items-center justify-center min-w-[18px] h-[18px] rounded-full text-[10px] font-bold"
                   style={{ background: "var(--critical)", color: "white" }}
                 >
-                  {item.badge}
+                  {badgeCount}
                 </motion.span>
               )}
-              {item.badge && sidebarCollapsed && (
+              {badgeCount > 0 && sidebarCollapsed && (
                 <span
                   className="absolute top-1 right-1 w-2 h-2 rounded-full"
                   style={{ background: "var(--critical)" }}

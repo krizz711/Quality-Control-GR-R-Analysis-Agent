@@ -215,7 +215,7 @@ export default function DashboardPage() {
                 Real-Time SPC Monitor <Play size={14} className="group-hover:translate-x-1 transition-transform" />
               </h3>
               <p className="text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                Continuous monitoring with Nelson rules. Detect trends, shifts, and out-of-control conditions. Alert accuracy >95%.
+                  Real-time SPC charting with Nelson rules evaluation to detect out-of-control conditions. Alert accuracy &gt;95%.
               </p>
             </div>
           </div>

@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     api_auth_key: str = "arad-secret-key"
+    cors_origins: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "http://localhost:3001"
+    )
 
 
 # Singleton — import this everywhere

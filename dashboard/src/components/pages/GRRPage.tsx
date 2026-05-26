@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
   FlaskConical,
@@ -31,9 +31,17 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import { useGRRReviews, useGRRNarrative, downloadGRRReport } from "@/lib/hooks";
+import {
+  useGRRReviews,
+  useGRRStudy,
+  useGRRNarrative,
+  submitReviewDecision,
+  downloadGRRReport,
+} from "@/lib/hooks";
 import type { UIGRRStudy } from "@/lib/types";
 import { formatPercent, grrVerdict, timeAgo } from "@/lib/utils";
+import ErrorPanel from "@/components/ui/ErrorPanel";
+import { GRRPageSkeleton } from "@/components/ui/PageSkeleton";
 
 const container = {
   hidden: { opacity: 0 },
@@ -41,7 +49,7 @@ const container = {
 };
 const item = {
   hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } },
 };
 
 const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) => {
@@ -67,17 +75,28 @@ const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?:
 };
 
 export default function GRRPage() {
-  const { data: reviews, loading, error, retry } = useGRRReviews();
-  const [selectedStudy, setSelectedStudy] = useState<UIGRRStudy | null>(null);
+  const reviewsQuery = useGRRReviews();
+  const reviews = reviewsQuery.data || [];
+  const [selectedStudyId, setSelectedStudyId] = useState<string | null>(null);
   const [showNarrative, setShowNarrative] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [decisionLoading, setDecisionLoading] = useState<null | "approved" | "rejected">(null);
+  const [decisionNotes, setDecisionNotes] = useState("");
+  
+  const selectedStudy = useMemo(() => {
+    return reviews.find((s) => s.id === selectedStudyId) || reviews[0] || null;
+  }, [reviews, selectedStudyId]);
 
-  // Auto-select first study when data loads
-  useEffect(() => {
-    if (reviews && reviews.length > 0 && !selectedStudy) {
-      setSelectedStudy(reviews[0]);
-    }
-  }, [reviews, selectedStudy]);
+  const selectedReviewId = selectedStudy?.review_id || null;
+
+  const fullStudyQuery = useGRRStudy(selectedStudyId);
+  const fullStudy = fullStudyQuery.data;
+  const fullStudyLoading = fullStudyQuery.isLoading;
+  const fullStudyError = fullStudyQuery.error;
+  const narrativeQuery = useGRRNarrative(selectedStudyId, showNarrative);
+  const narrative = narrativeQuery.data;
+  const narrativeLoading = narrativeQuery.isLoading;
+  const narrativeError = narrativeQuery.error;
 
   const handleDownloadPDF = async () => {
     if (!selectedStudy) return;
@@ -92,36 +111,54 @@ export default function GRRPage() {
     }
   };
 
-  // Fallback to mock data if no backend connection
-  const studies = reviews || [];
-  const currentStudy = selectedStudy || (studies.length > 0 ? studies[0] : null);
+  const studies = useMemo(() => reviews, [reviews]);
 
-  if (error) {
+  const currentStudy = useMemo(() => {
+    // Always prefer the full study (has EV/AV/PV/status)
+    if (fullStudy) {
+      return {
+        ...(selectedStudy || fullStudy),
+        ...fullStudy,
+        review_id: selectedStudy?.review_id,
+        review_status: selectedStudy?.review_status,
+        created_at: selectedStudy?.created_at,
+      } as UIGRRStudy;
+    }
+    return selectedStudy || (studies.length > 0 ? studies[0] : null);
+  }, [fullStudy, selectedStudy, studies]);
+
+  if (reviewsQuery.isLoading && studies.length === 0) return <GRRPageSkeleton />;
+
+  if (reviewsQuery.isError) {
+    const message =
+      reviewsQuery.error instanceof Error ? reviewsQuery.error.message : "Unknown error";
     return (
-      <div className="h-full flex flex-col items-center justify-center p-6" style={{ background: "var(--bg-root)" }}>
-        <AlertTriangle size={48} style={{ color: "var(--critical)" }} className="mb-4" />
-        <h2 className="text-lg font-bold mb-2" style={{ color: "var(--text-primary)" }}>
-          Failed to Load GR&R Studies
-        </h2>
-        <p className="text-sm mb-4" style={{ color: "var(--text-secondary)" }}>
-          {error instanceof Error ? error.message : "Unknown error"}
-        </p>
-        <button
-          onClick={retry}
-          className="px-4 py-2 rounded-lg text-sm font-medium"
-          style={{ background: "var(--accent)", color: "white" }}
-        >
-          Retry
-        </button>
-      </div>
+      <ErrorPanel
+        title="Failed to load GR&R studies"
+        message={message}
+        onRetry={() => reviewsQuery.refetch()}
+      />
     );
   }
 
-  const varianceData = [
-    { name: "EV", value: currentStudy?.ev || 0, label: "Repeatability" },
-    { name: "AV", value: currentStudy?.av || 0, label: "Reproducibility" },
-    { name: "PV", value: currentStudy?.pv || 0, label: "Part Variation" },
-  ];
+  const handleDecision = async (decision: "approved" | "rejected") => {
+    if (!selectedReviewId) return;
+    try {
+      setDecisionLoading(decision);
+      await submitReviewDecision(selectedReviewId, decision, decisionNotes, "quality-engineer");
+      setShowNarrative(false);
+      setDecisionNotes("");
+      // Refresh list of pending reviews (approved/rejected should disappear)
+      reviewsQuery.refetch();
+      // If we just decided the currently selected study, clear selection
+      setSelectedStudyId(null);
+    } catch (err) {
+      console.error("Failed to submit decision:", err);
+      alert(err instanceof Error ? err.message : "Failed to submit decision");
+    } finally {
+      setDecisionLoading(null);
+    }
+  };
 
   const totalVar = (currentStudy?.ev || 0) + (currentStudy?.av || 0) + (currentStudy?.pv || 0);
   const contributionData = totalVar > 0 ? [
@@ -191,8 +228,8 @@ export default function GRRPage() {
               Equipment GR&R Comparison
             </span>
           </div>
-          {loading && <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />}
-        </div>
+          <div className="flex items-center gap-4">
+            {reviewsQuery.isFetching && <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />}
             <div className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full" style={{ background: "var(--success)" }} />
               <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>≤10%</span>
@@ -238,7 +275,7 @@ export default function GRRPage() {
               <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
                 Study History
               </span>
-              {loading && <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />}
+              {reviewsQuery.isFetching && <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />}
             </div>
             <div className="divide-y" style={{ borderColor: "var(--border-subtle)" }}>
               {studies.length === 0 ? (
@@ -252,7 +289,7 @@ export default function GRRPage() {
                   return (
                     <motion.div
                       key={study.id}
-                      onClick={() => { setSelectedStudy(study); setShowNarrative(false); }}
+                      onClick={() => { setSelectedStudyId(study.id); setShowNarrative(false); }}
                       whileHover={{ x: 2 }}
                       className="flex items-center gap-3 px-5 py-3.5 cursor-pointer transition-colors"
                       style={{
@@ -292,13 +329,27 @@ export default function GRRPage() {
 
         {/* Study Detail */}
         <motion.div variants={item} className="lg:col-span-3 space-y-4">
-          {loading && !currentStudy ? (
+          {((reviewsQuery.isLoading || fullStudyLoading) && !currentStudy) ? (
             <div className="flex items-center justify-center p-8" style={{ background: "var(--bg-surface)", borderRadius: "12px", border: "1px solid var(--border-subtle)" }}>
               <Loader2 size={24} className="animate-spin" style={{ color: "var(--accent)" }} />
               <span className="ml-3" style={{ color: "var(--text-secondary)" }}>Loading study...</span>
             </div>
           ) : currentStudy ? (
             <>
+              {fullStudyError && (
+                <div className="surface-card p-4" style={{ borderColor: "var(--critical)" }}>
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={14} style={{ color: "var(--critical)" }} />
+                    <span className="text-[12px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                      Could not load full study details
+                    </span>
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                    {fullStudyError instanceof Error ? fullStudyError.message : "Unknown error"}
+                  </div>
+                </div>
+              )}
+
               {/* Verdict hero */}
               <div
                 className="relative overflow-hidden rounded-xl p-5"
@@ -361,6 +412,117 @@ export default function GRRPage() {
                 </div>
               </div>
 
+              {/* Review actions + AI narrative */}
+              <div className="surface-card p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles size={14} style={{ color: "var(--accent)" }} />
+                    <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                      Review & AI Summary
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowNarrative((v) => !v)}
+                    disabled={!selectedStudyId}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] font-medium disabled:opacity-50"
+                    style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}
+                  >
+                    {narrativeLoading ? <Loader2 size={12} className="animate-spin" /> : <Eye size={12} />}
+                    {showNarrative ? "Hide AI" : "Show AI"}
+                  </button>
+                </div>
+
+                {selectedReviewId && (
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2">
+                      <div className="text-[11px] font-medium mb-1" style={{ color: "var(--text-muted)" }}>
+                        Decision notes (audit trail)
+                      </div>
+                      <textarea
+                        value={decisionNotes}
+                        onChange={(e) => setDecisionNotes(e.target.value)}
+                        className="w-full rounded-lg p-3 text-[12px]"
+                        rows={3}
+                        placeholder="Optional notes: root cause, corrective action, containment..."
+                        style={{
+                          background: "var(--bg-elevated)",
+                          border: "1px solid var(--border-subtle)",
+                          color: "var(--text-primary)",
+                        }}
+                      />
+                    </div>
+                    <div className="flex md:flex-col gap-2 md:justify-end">
+                      <button
+                        onClick={() => handleDecision("approved")}
+                        disabled={!!decisionLoading}
+                        className="flex-1 md:flex-none px-4 py-2 rounded-lg text-[12px] font-semibold disabled:opacity-50"
+                        style={{ background: "var(--success)", color: "white" }}
+                      >
+                        {decisionLoading === "approved" ? "Approving..." : "Approve"}
+                      </button>
+                      <button
+                        onClick={() => handleDecision("rejected")}
+                        disabled={!!decisionLoading}
+                        className="flex-1 md:flex-none px-4 py-2 rounded-lg text-[12px] font-semibold disabled:opacity-50"
+                        style={{ background: "var(--critical)", color: "white" }}
+                      >
+                        {decisionLoading === "rejected" ? "Rejecting..." : "Reject"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {showNarrative && (
+                  <div className="mt-4">
+                    {narrativeError && (
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-[11px]" style={{ color: "var(--critical)" }}>
+                          {narrativeError instanceof Error ? narrativeError.message : "Failed to load narrative"}
+                        </div>
+                        <button
+                          onClick={() => narrativeQuery.refetch()}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-medium"
+                          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", color: "var(--text-secondary)" }}
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
+
+                    {narrative && (
+                      <div className="space-y-3">
+                        <div>
+                          <div className="text-[11px] font-semibold mb-1" style={{ color: "var(--text-primary)" }}>
+                            Summary
+                          </div>
+                          <div className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                            {narrative.narrative?.summary || ""}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-semibold mb-1" style={{ color: "var(--text-primary)" }}>
+                            Root cause analysis
+                          </div>
+                          <div className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                            {narrative.narrative?.root_cause_analysis || ""}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-semibold mb-1" style={{ color: "var(--text-primary)" }}>
+                            Recommendations
+                          </div>
+                          <ul className="list-disc pl-5 space-y-1 text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                            {(narrative.narrative?.recommendations || []).map((r, idx) => (
+                              <li key={idx}>{r}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Variance contribution chart */}
               <div className="surface-card p-5">
                 <div className="flex items-center gap-2 mb-4">
@@ -401,7 +563,7 @@ export default function GRRPage() {
                             <motion.div
                               initial={{ width: 0 }}
                               animate={{ width: `${c.value}%` }}
-                              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1], delay: 0.2 + i * 0.1 }}
+                              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] as const, delay: 0.2 + i * 0.1 }}
                               className="h-full rounded-full"
                               style={{ background: c.fill }}
                             />

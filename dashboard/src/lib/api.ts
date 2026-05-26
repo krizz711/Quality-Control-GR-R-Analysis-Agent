@@ -1,9 +1,22 @@
 /**
- * API Client Wrapper — Centralized requests to backend with auth & error handling
+ * API client — centralized fetch wrapper for the FastAPI backend.
+ *
+ * Configure via environment:
+ *   NEXT_PUBLIC_API_URL  — e.g. http://localhost:8000 (dev) or https://api.yourdomain.com (prod)
+ *   NEXT_PUBLIC_API_KEY  — must match API_AUTH_KEY on the backend
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
+const DEFAULT_DEV_API_URL = 'http://localhost:8000';
+
+/** Resolved API base URL (no trailing slash). */
+export function getApiBaseUrl(): string {
+  const raw = process.env.NEXT_PUBLIC_API_URL?.trim() || DEFAULT_DEV_API_URL;
+  return raw.replace(/\/$/, '');
+}
+
+export const API_URL = getApiBaseUrl();
+
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY?.trim() || '';
 
 export class ApiError extends Error {
   constructor(
@@ -20,6 +33,15 @@ interface ApiRequestOptions extends RequestInit {
   timeout?: number;
 }
 
+function buildUrl(path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${API_URL}${normalized}`;
+}
+
+function isLikelyCorsOrNetworkError(error: unknown): boolean {
+  return error instanceof TypeError && error.message === 'Failed to fetch';
+}
+
 async function apiCall<T>(
   path: string,
   options: ApiRequestOptions = {}
@@ -30,12 +52,12 @@ async function apiCall<T>(
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetch(`${API_URL}${path}`, {
+    const response = await fetch(buildUrl(path), {
       ...fetchOptions,
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': API_KEY,
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
         ...(fetchOptions.headers || {}),
       },
     });
@@ -46,9 +68,11 @@ async function apiCall<T>(
       let detail = `HTTP ${response.status}`;
       try {
         const errorData = await response.json();
-        detail = errorData.detail || detail;
+        detail =
+          typeof errorData.detail === 'string'
+            ? errorData.detail
+            : JSON.stringify(errorData.detail);
       } catch {
-        // Fallback to status text if response isn't JSON
         detail = response.statusText || detail;
       }
       throw new ApiError(response.status, detail);
@@ -66,8 +90,11 @@ async function apiCall<T>(
       throw error;
     }
 
-    if (error instanceof TypeError && error.message === 'Failed to fetch') {
-      throw new ApiError(0, 'Network error — backend may be unavailable');
+    if (isLikelyCorsOrNetworkError(error)) {
+      throw new ApiError(
+        0,
+        `Cannot reach API at ${API_URL}. Check that the backend is running, CORS_ORIGINS includes your Next.js origin (e.g. http://localhost:3000), and NEXT_PUBLIC_API_KEY matches API_AUTH_KEY.`
+      );
     }
 
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -107,16 +134,15 @@ export async function patch<T>(
 }
 
 export async function getFile(path: string, timeout?: number): Promise<Blob> {
-  const { timeout: _, ...options } = { timeout };
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout || 30000);
 
   try {
-    const response = await fetch(`${API_URL}${path}`, {
+    const response = await fetch(buildUrl(path), {
       method: 'GET',
       signal: controller.signal,
       headers: {
-        'X-API-Key': API_KEY,
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
       },
     });
 
@@ -129,6 +155,9 @@ export async function getFile(path: string, timeout?: number): Promise<Blob> {
     return await response.blob();
   } catch (error) {
     clearTimeout(timeoutId);
+    if (isLikelyCorsOrNetworkError(error)) {
+      throw new ApiError(0, `Cannot reach API at ${API_URL} (CORS or network).`);
+    }
     throw error;
   }
 }
@@ -138,4 +167,5 @@ export const api = {
   post,
   patch,
   getFile,
+  getBaseUrl: getApiBaseUrl,
 };
