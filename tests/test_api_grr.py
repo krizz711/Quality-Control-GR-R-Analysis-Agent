@@ -4,7 +4,7 @@ from unittest.mock import patch, AsyncMock
 
 from api.main import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"x-api-key": "arad-secret-key"})
 
 @patch("api.main.mlflow")
 @patch("api.main.AsyncSessionLocal")

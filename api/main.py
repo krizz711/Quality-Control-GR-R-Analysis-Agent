@@ -22,7 +22,7 @@ import pandas as pd
 import mlflow
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Depends, Header
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
@@ -35,16 +35,27 @@ from db.database import AsyncSessionLocal
 from db.models import GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
+from api.ai_routes import router as ai_router
 
 setup_logging(level=settings.log_level)
 
 logger = logging.getLogger(__name__)
 
+async def verify_key(x_api_key: str = Header(...)):
+    if x_api_key != settings.api_auth_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate API key",
+        )
+
 app = FastAPI(
     title="Arad Quality Agent API",
     description="Manufacturing quality control — GR&R analysis, SPC monitoring, and intelligent alerting.",
     version="0.1.0",
+    dependencies=[Depends(verify_key)],
 )
+
+app.include_router(ai_router)
 
 
 @app.middleware("http")

@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     # MLflow
     mlflow_tracking_uri: str = "http://localhost:5000"
 
-    # Anthropic
-    anthropic_api_key: str
+    # Gemini
+    gemini_api_key: str
 
     # Alerts
     slack_webhook_url: str = ""
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     log_level: str = "INFO"
+    api_auth_key: str = "arad-secret-key"
 
 
 # Singleton — import this everywhere

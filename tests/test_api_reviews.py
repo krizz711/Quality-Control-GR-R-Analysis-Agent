@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from api.main import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"x-api-key": "arad-secret-key"})
 
 
 def _session_with_execute(mock_session_local: MagicMock, execute_result: MagicMock) -> AsyncMock:
