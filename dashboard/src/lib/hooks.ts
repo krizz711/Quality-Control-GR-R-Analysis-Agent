@@ -3,7 +3,7 @@
  * Manages loading, error, and caching state for API calls
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, ApiError } from './api';
 import type {
   UIGRRStudy,
@@ -14,6 +14,7 @@ import type {
   SPCInterpretResponse,
   PredictResponse,
 } from './types';
+import { isChartType } from './types';
 
 export interface UseAsyncState<T> {
   data: T | null;
@@ -32,22 +33,31 @@ export function useAsync<T>(
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | Error | null>(null);
+  const asyncFnRef = useRef(asyncFn);
+  const depsKey = JSON.stringify(deps);
+
+  useEffect(() => {
+    asyncFnRef.current = asyncFn;
+  }, [asyncFn]);
 
   const execute = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const result = await asyncFn();
+      const result = await asyncFnRef.current();
       setData(result);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
       setLoading(false);
     }
-  }, deps);
+  }, [depsKey]);
 
   useEffect(() => {
-    execute();
+    const timer = setTimeout(() => {
+      void execute();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [execute]);
 
   return { data, loading, error, retry: execute };
@@ -277,7 +287,7 @@ export function transformSPCResponseToUI(
     machine_id: machineId,
     part_number: partNumber,
     characteristic: characteristicName,
-    chart_type: (response.chart_type as any) || 'xbar_r',
+    chart_type: isChartType(response.chart_type) ? response.chart_type : 'xbar_r',
     ucl: response.ucl,
     cl: response.cl,
     lcl: response.lcl,
