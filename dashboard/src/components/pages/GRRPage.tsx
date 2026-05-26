@@ -41,7 +41,7 @@ const container = {
 };
 const item = {
   hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } },
+  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } },
 };
 
 const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) => {
@@ -205,8 +205,6 @@ export default function GRRPage() {
               <span className="w-2 h-2 rounded-full" style={{ background: "var(--critical)" }} />
               <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>&gt;30%</span>
             </div>
-          </div>
-        </div>
         <ResponsiveContainer width="100%" height={180}>
           <BarChart data={grrComparisonData} barSize={32}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
@@ -401,7 +399,7 @@ export default function GRRPage() {
                             <motion.div
                               initial={{ width: 0 }}
                               animate={{ width: `${c.value}%` }}
-                              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1], delay: 0.2 + i * 0.1 }}
+                              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] as const, delay: 0.2 + i * 0.1 }}
                               className="h-full rounded-full"
                               style={{ background: c.fill }}
                             />
