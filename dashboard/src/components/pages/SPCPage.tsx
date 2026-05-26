@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Activity,
@@ -25,7 +25,8 @@ import {
   ReferenceArea,
   Dot,
 } from "recharts";
-import { spcCharts, type SPCChart } from "@/lib/mock-data";
+import { type SPCChart } from "@/lib/mock-data";
+import { analyzeSPC, transformSPCResponseToUI } from "@/lib/hooks";
 
 const container = {
   hidden: { opacity: 0 },
@@ -222,8 +223,54 @@ function ControlChartCard({ chart, expanded, onExpand }: { chart: SPCChart; expa
 export default function SPCPage() {
   const [expandedChart, setExpandedChart] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "violations">("all");
+  const [charts, setCharts] = useState<SPCChart[]>([]);
 
-  const filtered = filter === "violations" ? spcCharts.filter((c) => c.active_violations.length > 0) : spcCharts;
+  // Simulate real-time data fetching
+  useEffect(() => {
+    // Initial data stream values
+    const dataStreams = [
+      { id: "CMM-001", part: "P-2847", char: "Bore Diameter", cl: 25.02, sigma: 0.004, values: Array.from({length: 40}, () => 25.02 + (Math.random() - 0.5) * 0.004 * 2) },
+      { id: "CNC-L4-001", part: "P-3921", char: "Thread Pitch", cl: 1.25, sigma: 0.001, values: Array.from({length: 40}, () => 1.25 + (Math.random() - 0.5) * 0.001 * 2) },
+    ];
+
+    let mounted = true;
+
+    const fetchUpdates = async () => {
+      try {
+        const updatedCharts = await Promise.all(
+          dataStreams.map(async (stream) => {
+            // Add a new point, dropping the oldest
+            stream.values.shift();
+            // Occasionally introduce an anomaly for CMM-001 to show violations
+            let newValue = stream.cl + (Math.random() - 0.5) * stream.sigma * 2;
+            if (stream.id === "CMM-001" && Math.random() > 0.95) {
+                newValue = stream.cl + 3.5 * stream.sigma; // Out of control!
+            }
+            stream.values.push(newValue);
+
+            const response = await analyzeSPC(stream.values, 'xbar_r');
+            return transformSPCResponseToUI(response, stream.id, stream.part, stream.char);
+          })
+        );
+        
+        if (mounted) {
+          setCharts(updatedCharts as SPCChart[]);
+        }
+      } catch (error) {
+        console.error("Error fetching SPC updates:", error);
+      }
+    };
+
+    fetchUpdates();
+    const interval = setInterval(fetchUpdates, 3000); // Poll every 3 seconds
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const filtered = filter === "violations" ? charts.filter((c) => c.active_violations.length > 0) : charts;
 
   return (
     <motion.div
@@ -247,7 +294,7 @@ export default function SPCPage() {
           {/* Status summary */}
           <div className="hidden md:flex items-center gap-3 mr-4">
             {["critical", "warning", "stable"].map((status) => {
-              const count = spcCharts.filter((c) => c.status === status).length;
+              const count = charts.filter((c) => c.status === status).length;
               return (
                 <div key={status} className="flex items-center gap-1.5">
                   <span
@@ -294,7 +341,7 @@ export default function SPCPage() {
       </motion.div>
 
       {/* Anomaly feed strip */}
-      {spcCharts.some((c) => c.active_violations.length > 0) && (
+      {charts.some((c) => c.active_violations.length > 0) && (
         <motion.div variants={item}>
           <div
             className="flex items-center gap-4 px-5 py-3 rounded-xl overflow-x-auto"
@@ -307,7 +354,7 @@ export default function SPCPage() {
               </span>
             </div>
             <div className="h-4 w-px" style={{ background: "rgba(248,113,113,0.2)" }} />
-            {spcCharts
+            {charts
               .filter((c) => c.active_violations.length > 0)
               .map((c) => (
                 <div key={c.id} className="flex items-center gap-2 shrink-0">
