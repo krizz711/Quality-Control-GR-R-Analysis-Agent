@@ -32,6 +32,7 @@ export function useAsync<T>(
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | Error | null>(null);
+  const depsKey = JSON.stringify(deps);
 
   const execute = useCallback(async () => {
     setLoading(true);
@@ -44,10 +45,13 @@ export function useAsync<T>(
     } finally {
       setLoading(false);
     }
-  }, deps);
+  }, [asyncFn, depsKey]);
 
   useEffect(() => {
-    execute();
+    const timer = setTimeout(() => {
+      void execute();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [execute]);
 
   return { data, loading, error, retry: execute };
@@ -272,12 +276,15 @@ export function transformSPCResponseToUI(
     status = 'warning';
   }
 
+  const chartType: UISPCChart['chart_type'] =
+    response.chart_type === 'p' ? 'p_chart' : response.chart_type === 'i_mr' ? 'i_mr' : 'xbar_r';
+
   return {
     id: `spc_${machineId}_${Date.now()}`,
     machine_id: machineId,
     part_number: partNumber,
     characteristic: characteristicName,
-    chart_type: (response.chart_type as any) || 'xbar_r',
+    chart_type: chartType,
     ucl: response.ucl,
     cl: response.cl,
     lcl: response.lcl,
