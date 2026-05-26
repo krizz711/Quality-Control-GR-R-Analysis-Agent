@@ -13,6 +13,14 @@ from api.main import app
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def mock_alert_engine():
+    """SPC analyze may invoke AlertEngine when Rule 1 fires."""
+    with patch("api.main.AlertEngine") as mock_cls:
+        mock_cls.return_value.process_pending_violations = AsyncMock(return_value=0)
+        yield mock_cls
+
+
 def _in_control_xbar_values(n_subgroups: int = 10, subgroup_size: int = 5) -> list[float]:
     rng = np.random.default_rng(0)
     values: list[float] = []

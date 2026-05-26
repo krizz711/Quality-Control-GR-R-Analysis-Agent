@@ -572,3 +572,11 @@ Created the `POST /studies/grr` endpoint combining the full stack:
 - **Tests:** Added `TestPChart`, Nelson rules 4–8 unit tests, subgroup validation tests, and tightened false-positive Monte Carlo (chart-aligned Xbar data, threshold 0.20 → 0.10).
 - **API tests:** Added `tests/test_api_spc.py` covering `xbar_r`, `i_mr`, `p`, partial-subgroup truncation, Rule 1 persistence, and invalid subgroup size (26 SPC tests passing).
 
+### 38. Expanded Orchestrator & Alerting Capabilities
+- Added `part_number` and `characteristic_name` default values to `SPCRequest` to improve data robustness for quality tracking.
+- Verified and refined SQL data insertion mapping for Nelson Rule 1 quality violations in `api/main.py`.
+- Updated `agent/alert_engine.py` and `agent/orchestrator.py` to support comprehensive alerting and processing workflows.
+- Introduced JSON structured logging via `core/logging_config.py`.
+- Added additional monitoring configuration and Prometheus metrics instrumentation, updating `docker-compose.yml` and `pyproject.toml` accordingly.
+- Expanded testing suite to include API review endpoints (`tests/test_api_reviews.py`) and robust alert engine validations (`tests/test_alert_engine.py`).
+

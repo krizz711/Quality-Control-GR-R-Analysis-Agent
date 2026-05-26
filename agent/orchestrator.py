@@ -15,6 +15,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import mlflow
@@ -26,6 +27,7 @@ from agent.alert_engine import AlertEngine
 from agent.alerts import send_slack_alert
 from core.config import settings
 from db.database import AsyncSessionLocal
+from db.models import QualityViolation
 
 logger = logging.getLogger(__name__)
 
@@ -191,24 +193,23 @@ class QualityOrchestrator:
             )
 
             rule1 = violations.get("rule_1", [])
-            for idx in rule1:
-                await session.execute(
-                    text("""
-                        INSERT INTO quality_violations
-                        (timestamp, part_number, characteristic_name, violation_type,
-                         severity, measured_value, ucl, lcl, alert_sent)
-                        VALUES (NOW(), :pn, :cn, 'nelson_rule_1',
-                                'critical', :val, :ucl, :lcl, FALSE)
-                    """),
-                    {
-                        "pn": event["part_number"],
-                        "cn": event["characteristic_name"],
-                        "val": float(chart_values[idx]),
-                        "ucl": i_chart.limits.ucl,
-                        "lcl": i_chart.limits.lcl,
-                    },
-                )
-            await session.commit()
+            if rule1:
+                now = datetime.now(timezone.utc)
+                for idx in rule1:
+                    session.add(
+                        QualityViolation(
+                            timestamp=now,
+                            part_number=event["part_number"],
+                            characteristic_name=event["characteristic_name"],
+                            violation_type="nelson_rule_1",
+                            severity="critical",
+                            measured_value=float(chart_values[idx]),
+                            ucl=i_chart.limits.ucl,
+                            lcl=i_chart.limits.lcl,
+                            alert_sent=False,
+                        )
+                    )
+                await session.commit()
 
         await self.alert_engine.process_pending_violations()
 

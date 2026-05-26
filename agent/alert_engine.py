@@ -5,7 +5,7 @@ Alert engine — reads pending quality violations and dispatches Slack/JIRA aler
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
@@ -122,7 +122,7 @@ class AlertEngine:
         Returns True if an alert was already sent for this
         part+characteristic in the last 4 hours.
         """
-        cutoff = datetime.utcnow() - timedelta(hours=4)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
         result = await session.execute(
             text("""
                 SELECT COUNT(*) FROM quality_violations

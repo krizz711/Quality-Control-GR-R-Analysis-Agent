@@ -61,6 +61,26 @@ def test_patch_review_not_found_returns_404(mock_session_local: MagicMock) -> No
 
 
 @patch("api.main.AsyncSessionLocal")
+def test_patch_already_decided_returns_400(mock_session_local: MagicMock) -> None:
+    mock_mappings = MagicMock()
+    mock_mappings.first.return_value = {
+        "id": "r",
+        "study_id": "s",
+        "status": "approved",
+    }
+    execute_result = MagicMock()
+    execute_result.mappings.return_value = mock_mappings
+    _session_with_execute(mock_session_local, execute_result)
+
+    response = client.patch(
+        "/reviews/r",
+        json={"decision": "approved", "decided_by": "john"},
+    )
+
+    assert response.status_code == 400
+
+
+@patch("api.main.AsyncSessionLocal")
 def test_approve_review_returns_decision_in_response(
     mock_session_local: MagicMock,
 ) -> None:

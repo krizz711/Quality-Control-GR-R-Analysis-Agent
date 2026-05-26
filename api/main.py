@@ -13,6 +13,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import uuid
@@ -22,13 +23,20 @@ import mlflow
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, status
+from prometheus_client import Counter, Gauge, Histogram
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from agent.alert_engine import AlertEngine
+from core.config import settings
+from core.logging_config import setup_logging
 from db.database import AsyncSessionLocal
 from db.models import GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
+
+setup_logging(level=settings.log_level)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +45,58 @@ app = FastAPI(
     description="Manufacturing quality control — GR&R analysis, SPC monitoring, and intelligent alerting.",
     version="0.1.0",
 )
+
+
+@app.middleware("http")
+async def log_requests(request, call_next):
+    import time
+    import uuid
+
+    request_id = str(uuid.uuid4())[:8]
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = round((time.time() - start) * 1000)
+    logging.getLogger("api").info(
+        "request",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    return response
+
+
+# Counter: total GRR studies run, labelled by acceptance level
+grr_studies_total = Counter(
+    "grr_studies_total",
+    "Total GRR studies completed",
+    ["acceptance_level"],
+)
+
+# Histogram: GRR study duration in seconds
+grr_study_duration = Histogram(
+    "grr_study_duration_seconds",
+    "Time taken to complete a GRR study",
+    buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
+)
+
+# Counter: quality violations detected, labelled by rule
+violations_detected = Counter(
+    "violations_detected_total",
+    "Total quality violations detected",
+    ["violation_type"],
+)
+
+# Gauge: current pending reviews in review_queue
+pending_reviews = Gauge(
+    "pending_reviews_count",
+    "Number of GRR studies awaiting human review",
+)
+
+Instrumentator().instrument(app).expose(app)
 
 
 # ─── Request / Response schemas ──────────────────────────────────────────────
@@ -72,6 +132,8 @@ class SPCRequest(BaseModel):
     values: list[float] = Field(..., min_length=2)
     chart_type: str = Field("xbar_r", pattern="^(xbar_r|i_mr|p)$")
     subgroup_size: int = Field(5, ge=2)
+    part_number: str = "UNKNOWN"
+    characteristic_name: str = "UNKNOWN"
 
 
 class SPCResponse(BaseModel):
@@ -100,6 +162,21 @@ class ReviewDecision(BaseModel):
     decided_by: str
 
 
+class ReviewQueueResponse(BaseModel):
+    """Pending review row joined with GR&R study summary for the dashboard."""
+
+    id: uuid.UUID
+    study_id: uuid.UUID
+    status: str
+    assigned_to: str | None = None
+    due_at: datetime | None = None
+    created_at: datetime | None = None
+    grr_pct: float | None = None
+    ndc: int | None = None
+    equipment_id: str
+    characteristic_name: str
+
+
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
@@ -118,6 +195,7 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
     """
     Submit measurement data and run a GR&R study.
     """
+    start_time = time.time()
     try:
         # 1. Convert body.measurements to DataFrame
         df = pd.DataFrame(body.measurements)
@@ -187,6 +265,12 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
                 "ndc": result.ndc
             })
             mlflow.set_tag("acceptance", verdict.level.value)
+
+        duration = time.time() - start_time
+        grr_study_duration.observe(duration)
+        grr_studies_total.labels(acceptance_level=verdict.level.value).inc()
+        if verdict.requires_human_review:
+            pending_reviews.inc()
 
         # 8. Return response
         return GRRStudyResponse(
@@ -299,6 +383,8 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
                 for idx in rule_1_indices:
                     violation = QualityViolation(
                         timestamp=now,
+                        part_number=body.part_number,
+                        characteristic_name=body.characteristic_name,
                         violation_type="nelson_rule_1",
                         severity="critical",
                         measured_value=float(chart_values[idx]),
@@ -313,6 +399,14 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
                 "Persisted %d Nelson Rule 1 violations to quality_violations",
                 len(rule_1_indices),
             )
+
+        if rule_1_indices:
+            sent = await AlertEngine().process_pending_violations()
+            logger.info("Alert engine processed pending violations — sent %d", sent)
+
+        for rule_name, indices in nelson_violations.items():
+            if indices:
+                violations_detected.labels(violation_type=rule_name).inc(len(indices))
 
         # ── 4. Return response ───────────────────────────────────────────
         return SPCResponse(
@@ -331,8 +425,8 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
         )
 
 
-@app.get("/reviews", tags=["reviews"])
-async def list_pending_reviews() -> list[dict[str, Any]]:
+@app.get("/reviews", response_model=list[ReviewQueueResponse], tags=["reviews"])
+async def list_pending_reviews() -> list[ReviewQueueResponse]:
     """Returns all pending review_queue rows for the quality engineer dashboard."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
@@ -347,7 +441,7 @@ async def list_pending_reviews() -> list[dict[str, Any]]:
             """)
         )
         rows = result.mappings().all()
-        return [dict(r) for r in rows]
+        return [ReviewQueueResponse.model_validate(row) for row in rows]
 
 
 @app.patch("/reviews/{review_id}", tags=["reviews"])

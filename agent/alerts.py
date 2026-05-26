@@ -5,7 +5,7 @@ Async alerting via Slack webhooks and JIRA REST API.
 from __future__ import annotations
 
 import logging
-import time
+from datetime import datetime, timezone
 
 import httpx
 
@@ -42,7 +42,7 @@ async def send_slack_alert(
                 "title": f"Quality Alert — {severity.upper()}",
                 "text": text,
                 "footer": "Arad Quality Agent",
-                "ts": int(time.time()),
+                "ts": int(datetime.now(timezone.utc).timestamp()),
             }
         ]
     }
