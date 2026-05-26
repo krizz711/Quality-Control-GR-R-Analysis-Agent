@@ -30,7 +30,14 @@ data = {
     "method": "xbar_r"
 }
 
-req = urllib.request.Request(url, json.dumps(data).encode('utf-8'), {'Content-Type': 'application/json'})
+req = urllib.request.Request(
+    url,
+    json.dumps(data).encode('utf-8'),
+    {
+        'Content-Type': 'application/json',
+        'X-API-Key': 'arad-secret-key',
+    },
+)
 try:
     with urllib.request.urlopen(req) as res:
         print("Status Code:", res.getcode())

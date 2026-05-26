@@ -23,6 +23,7 @@ import mlflow
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, status, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
@@ -53,6 +54,19 @@ app = FastAPI(
     description="Manufacturing quality control — GR&R analysis, SPC monitoring, and intelligent alerting.",
     version="0.1.0",
     dependencies=[Depends(verify_key)],
+)
+
+# Allow local dashboard dev server to call the API from the browser during development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(ai_router)
