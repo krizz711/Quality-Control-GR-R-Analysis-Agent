@@ -23,6 +23,7 @@ import mlflow
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, status, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
@@ -31,8 +32,8 @@ from sqlalchemy import text
 from agent.alert_engine import AlertEngine
 from core.config import settings
 from core.logging_config import setup_logging
-from db.database import AsyncSessionLocal
-from db.models import GrrStudy, QualityViolation, ReviewQueue
+from db.database import AsyncSessionLocal, engine
+from db.models import Base, GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 from api.ai_routes import router as ai_router
@@ -55,7 +56,21 @@ app = FastAPI(
     dependencies=[Depends(verify_key)],
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(ai_router)
+
+
+@app.on_event("startup")
+async def create_tables() -> None:
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 @app.middleware("http")

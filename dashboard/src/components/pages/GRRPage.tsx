@@ -193,6 +193,7 @@ export default function GRRPage() {
           </div>
           {loading && <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />}
         </div>
+        <div className="flex items-center justify-end gap-4 mb-3">
             <div className="flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full" style={{ background: "var(--success)" }} />
               <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>≤10%</span>
@@ -205,7 +206,6 @@ export default function GRRPage() {
               <span className="w-2 h-2 rounded-full" style={{ background: "var(--critical)" }} />
               <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>&gt;30%</span>
             </div>
-          </div>
         </div>
         <ResponsiveContainer width="100%" height={180}>
           <BarChart data={grrComparisonData} barSize={32}>
