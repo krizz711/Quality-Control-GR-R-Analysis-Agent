@@ -126,7 +126,7 @@ export default function IntegrationsModal({ isOpen, onClose }: IntegrationsModal
                         <h4 className="font-bold text-sm text-white">Grafana Metrics</h4>
                       </div>
                       <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                        TimescaleDB exposes Prometheus metrics. Engineers can build deep-dive macro dashboards extending the Agent's insights.
+                        TimescaleDB exposes Prometheus metrics. Engineers can build deep-dive macro dashboards extending the Agent&apos;s insights.
                       </p>
                     </div>
                   </div>
