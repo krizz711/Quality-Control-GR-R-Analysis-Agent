@@ -3,8 +3,6 @@
  * Auto-generated from Pydantic schemas in api/main.py and api/ai_routes.py
  */
 
-import { UUID } from 'crypto';
-
 // ─── GR&R Study Types ───────────────────────────────────────────────────────
 
 export interface GRRStudyRequest {
@@ -23,7 +21,7 @@ export interface GRRStudyRequest {
 
 export interface GRRStudyResponse {
   study_id: string;
-  grr_percent: float;
+  grr_percent: number;
   acceptance: 'acceptable' | 'conditional' | 'not_acceptable';
   ndc: number;
   details?: Record<string, unknown>;

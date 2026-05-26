@@ -1,3 +1,6 @@
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE measurements (
     id UUID DEFAULT gen_random_uuid(),
     timestamp TIMESTAMPTZ NOT NULL,
@@ -68,3 +71,16 @@ CREATE TABLE review_queue (
 
 CREATE INDEX ON review_queue (status);
 CREATE INDEX ON review_queue (study_id);
+
+CREATE TABLE audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor VARCHAR(128) NOT NULL,
+    action VARCHAR(128) NOT NULL,
+    entity_type VARCHAR(64) NOT NULL,
+    entity_id VARCHAR(128) NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON audit_logs (entity_type, entity_id, created_at DESC);
+CREATE INDEX ON audit_logs (actor, created_at DESC);

@@ -16,6 +16,7 @@ IMPORTANT: Requires the Kafka consumer to be running before executing:
 
 import asyncio
 import random
+import uuid
 from datetime import UTC, datetime
 
 import pytest
@@ -26,7 +27,7 @@ from core.config import settings
 from db.database import AsyncSessionLocal
 from schemas.measurement import MeasurementEvent
 
-TEST_EQUIPMENT_ID = "TEST-INTEGRATION-001"
+TEST_EQUIPMENT_ID = f"TEST-INTEGRATION-{uuid.uuid4()}"
 TOPIC = "quality.measurements"
 NUM_RECORDS = 10
 CONSUMER_SETTLE_SECONDS = 8

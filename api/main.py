@@ -22,8 +22,9 @@ import pandas as pd
 import mlflow
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, status, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, status, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
@@ -33,7 +34,7 @@ from agent.alert_engine import AlertEngine
 from core.config import settings
 from core.logging_config import setup_logging
 from db.database import AsyncSessionLocal
-from db.models import GrrStudy, QualityViolation, ReviewQueue
+from db.models import AuditLog, GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 from api.ai_routes import router as ai_router
@@ -42,18 +43,18 @@ setup_logging(level=settings.log_level)
 
 logger = logging.getLogger(__name__)
 
-async def verify_key(x_api_key: str = Header(...)):
-    if x_api_key != settings.api_auth_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate API key",
-        )
-
 app = FastAPI(
     title="Arad Quality Agent API",
     description="Manufacturing quality control — GR&R analysis, SPC monitoring, and intelligent alerting.",
     version="0.1.0",
-    dependencies=[Depends(verify_key)],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 # Allow local dashboard dev server to call the API from the browser during development
@@ -70,6 +71,23 @@ app.add_middleware(
 )
 
 app.include_router(ai_router)
+
+
+AUTH_EXEMPT_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def enforce_api_key(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in AUTH_EXEMPT_PATHS:
+        return await call_next(request)
+
+    if request.headers.get("x-api-key") != settings.api_auth_key:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "Could not validate API key"},
+        )
+
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -272,6 +290,23 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
                     status="pending"
                 )
                 session.add(review_item)
+
+            session.add(
+                AuditLog(
+                    actor="system",
+                    action="grr_study_completed",
+                    entity_type="grr_study",
+                    entity_id=str(study_id),
+                    details={
+                        "equipment_id": equipment_id,
+                        "characteristic_name": characteristic_name,
+                        "grr_pct": result.total_grr,
+                        "ndc": result.ndc,
+                        "acceptance": verdict.level.value,
+                        "requires_human_review": verdict.requires_human_review,
+                    },
+                )
+            )
 
             await session.commit()
 
@@ -531,6 +566,20 @@ async def decide_review(review_id: str, body: ReviewDecision) -> dict[str, Any]:
                 "notes": body.notes,
                 "study_id": str(review["study_id"]),
             },
+        )
+
+        session.add(
+            AuditLog(
+                actor=body.decided_by,
+                action=f"grr_review_{body.decision}",
+                entity_type="review_queue",
+                entity_id=review_id,
+                details={
+                    "study_id": str(review["study_id"]),
+                    "notes": body.notes,
+                    "decision": body.decision,
+                },
+            )
         )
 
         await session.commit()

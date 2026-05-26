@@ -265,7 +265,7 @@ def test_api_auth_failure():
     }
     # No headers provided
     res = client.post("/chat", json=payload)
-    assert res.status_code == 422  # x-api-key header missing completely
+    assert res.status_code == 403
 
     # Wrong header
     res = client.post("/chat", json=payload, headers={"x-api-key": "wrong-key"})

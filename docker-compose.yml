@@ -1,14 +1,15 @@
 services:
   timescaledb:
-    image: timescale/timescaledb:latest-pg15
+    image: timescale/timescaledb:2.27.1-pg15
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: arad_quality
-      POSTGRES_USER: arad
-      POSTGRES_PASSWORD: arad_pass
+      POSTGRES_DB: ${POSTGRES_DB:-arad_quality}
+      POSTGRES_USER: ${POSTGRES_USER:-arad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arad_pass}
     volumes:
       - timescale_data:/var/lib/postgresql/data
+      - ./db/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U arad -d arad_quality"]
       interval: 10s
@@ -18,12 +19,12 @@ services:
       - arad-network
 
   pgadmin:
-    image: dpage/pgadmin4
+    image: dpage/pgadmin4:8.14
     ports:
       - "5050:80"
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@arad.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@arad.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
     networks:
       - arad-network
 
@@ -31,13 +32,19 @@ services:
     image: confluentinc/cp-zookeeper:7.5.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+    healthcheck:
+      test: ["CMD-SHELL", "cub zk-ready localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
     networks:
       - arad-network
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -50,7 +57,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -58,7 +65,7 @@ services:
       - arad-network
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui:v0.7.2
     depends_on:
       - kafka
     ports:
@@ -66,6 +73,74 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: arad-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - arad-network
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: arad-quality-agent-api:0.1.0
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      JIRA_URL: ${JIRA_URL:-}
+      JIRA_EMAIL: ${JIRA_EMAIL:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      JIRA_PROJECT_KEY: ${JIRA_PROJECT_KEY:-QUAL}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_AUTH_KEY: ${API_AUTH_KEY:-arad-secret-key}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      ALLOW_MOCK_DATA: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arad-network
+
+  consumer:
+    image: arad-quality-agent-api:0.1.0
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "agent.consumer"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_AUTH_KEY: ${API_AUTH_KEY:-arad-secret-key}
+    restart: unless-stopped
+    networks:
+      - arad-network
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_API_KEY: ${API_AUTH_KEY:-arad-secret-key}
+        NEXT_PUBLIC_ALLOW_MOCK_DATA: ${NEXT_PUBLIC_ALLOW_MOCK_DATA:-false}
+    image: arad-quality-agent-dashboard:0.1.0
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
     networks:
       - arad-network
 
@@ -85,7 +160,7 @@ services:
     volumes:
       - ./mlflow-artifacts:/mlflow/artifacts
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/', timeout=5)\""]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -96,7 +171,7 @@ services:
       - arad-network
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.55.1
     ports:
       - "9090:9090"
     volumes:
@@ -105,12 +180,12 @@ services:
       - arad-network
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     ports:
-      - "3000:3000"
+      - "3002:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
     volumes:
       - grafana_data:/var/lib/grafana
     depends_on:

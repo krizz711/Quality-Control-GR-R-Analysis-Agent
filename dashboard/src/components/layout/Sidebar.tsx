@@ -37,7 +37,7 @@ export default function Sidebar() {
     <motion.aside
       initial={false}
       animate={{ width: sidebarCollapsed ? 64 : 240 }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
       className="relative flex flex-col h-full border-r z-20 shrink-0"
       style={{
         background: "var(--bg-primary)",

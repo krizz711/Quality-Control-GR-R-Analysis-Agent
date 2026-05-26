@@ -1,37 +1,88 @@
 # Arad Quality Agent
 
-Manufacturing quality control agent with GR&R analysis, SPC charting, and intelligent alerting.
+Manufacturing quality control platform for automated GR&R analysis, SPC monitoring, quality alerting, audit trails, and AI-assisted quality engineering review.
+
+## Production Readiness
+
+The app now has a production-oriented compose stack with:
+
+- FastAPI API service with API-key protection for business endpoints
+- public `/health` and `/metrics` endpoints for orchestration and Prometheus
+- Kafka consumer service for real-time measurement ingestion
+- TimescaleDB initialization from the checked-in migration
+- dashboard service built with mock data disabled by default
+- MLflow, Prometheus, Grafana, Kafka UI, and pgAdmin support services
+- audit log persistence for GR&R completion and review decisions
+- CI gates for backend tests and dashboard production build
+
+Before a real production deployment, rotate every secret in `.env`, set `ENVIRONMENT=production`, and use a managed secret store or deployment platform secrets.
 
 ## Quick Start
 
 ```bash
-# Install dependencies
+cp .env.example .env
+docker compose up --build
+```
+
+Services:
+
+| Service | URL |
+| --- | --- |
+| Dashboard | http://localhost:3000 |
+| API | http://localhost:8000 |
+| API health | http://localhost:8000/health |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3002 |
+| Kafka UI | http://localhost:8080 |
+| pgAdmin | http://localhost:5050 |
+| MLflow | http://localhost:5000 |
+
+## Local Development
+
+```bash
 make install
-
-# Run the API server
 make run-api
+```
 
-# Run tests
-make test
+Dashboard:
 
-# Lint
-make lint
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+## Verification
+
+Normal release gate:
+
+```bash
+make prod-check
+```
+
+Live pipeline gate, requiring Docker services and the consumer:
+
+```bash
+docker compose up --build
+python -m pytest -m integration -v
 ```
 
 ## Architecture
 
 | Package | Purpose |
-|---------|---------|
-| `agent/` | LLM-powered orchestrator — Kafka consumer, event routing, alerting |
-| `grr/` | Gauge Repeatability & Reproducibility (Xbar-R, ANOVA, acceptance) |
-| `spc/` | Statistical Process Control (control charts, Nelson rules) |
-| `api/` | FastAPI REST layer |
+| --- | --- |
+| `agent/` | Kafka consumer, orchestration, alerting, AI helpers |
+| `grr/` | Gage Repeatability & Reproducibility calculations and acceptance |
+| `spc/` | Statistical Process Control charts and Nelson rules |
+| `api/` | FastAPI REST API |
+| `db/` | SQLAlchemy models and database migration |
+| `dashboard/` | Next.js manufacturing quality dashboard |
 
-## Infrastructure
+## Deployment Notes
 
-```bash
-# Start Postgres, Kafka, and MLflow locally
-docker compose up -d
-```
-
-Copy `.env.example` to `.env` and fill in your credentials.
+- `API_AUTH_KEY` must be a strong random secret in production.
+- `ALLOW_MOCK_DATA` and `NEXT_PUBLIC_ALLOW_MOCK_DATA` must stay `false` in production.
+- `CORS_ORIGINS` must list exact dashboard origins and must not use `*`.
+- Prometheus scrapes `api:8000/metrics` inside the compose network.
+- Grafana is exposed on host port `3002` so the product dashboard can use `3000`.
+- The checked-in `.env.example` contains placeholders only; never commit real `.env` values.
