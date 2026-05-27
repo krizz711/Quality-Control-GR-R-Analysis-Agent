@@ -2,27 +2,22 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  Search,
-  Sparkles,
-  Bell,
-  Shield,
-  Command,
-  Zap,
-  Network
-} from "lucide-react";
+import { Search, Sparkles, Bell, Shield, Command, Zap, Network } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import IntegrationsModal from "./IntegrationsModal";
 
 export default function CommandBar() {
-  const { notificationCount, setActivePage, setChatOpen } = useAppStore();
+  const { notificationCount, setActivePage, setChatOpen, setPendingChatPrompt } = useAppStore();
   const [focused, setFocused] = useState(false);
   const [query, setQuery] = useState("");
   const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (query.trim()) {
+    const trimmedQuery = query.trim();
+
+    if (trimmedQuery) {
+      setPendingChatPrompt(trimmedQuery);
       setActivePage("chat");
       setChatOpen(true);
       setQuery("");
@@ -38,7 +33,6 @@ export default function CommandBar() {
           borderColor: "var(--border-subtle)",
         }}
       >
-        {/* Search / AI Prompt */}
         <form onSubmit={handleSubmit} className="flex-1 max-w-2xl">
           <motion.div
             className="relative flex items-center"
@@ -66,9 +60,7 @@ export default function CommandBar() {
               onBlur={() => setFocused(false)}
               placeholder={focused ? "Ask the AI copilot anything..." : "Search or ask AI..."}
               className="flex-1 bg-transparent px-3 py-2 text-sm outline-none"
-              style={{
-                color: "var(--text-primary)",
-              }}
+              style={{ color: "var(--text-primary)" }}
             />
             <div className="flex items-center gap-1 mr-2">
               <kbd
@@ -85,9 +77,7 @@ export default function CommandBar() {
           </motion.div>
         </form>
 
-        {/* Right section */}
         <div className="flex items-center gap-1 ml-4">
-          {/* Live status */}
           <div
             className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg mr-2"
             style={{
@@ -101,15 +91,14 @@ export default function CommandBar() {
             </span>
             <Zap size={11} style={{ color: "var(--success)" }} />
           </div>
-          
-          {/* Integrations */}
+
           <button
             onClick={() => setIsIntegrationsOpen(true)}
             className="flex items-center justify-center gap-2 px-3 h-9 rounded-lg transition-colors border"
-            style={{ 
+            style={{
               color: "var(--text-primary)",
               background: "var(--bg-elevated)",
-              borderColor: "var(--border-subtle)" 
+              borderColor: "var(--border-subtle)",
             }}
             title="System Integrations & Architecture"
           >
@@ -117,8 +106,8 @@ export default function CommandBar() {
             <span className="text-xs font-medium">Integrations</span>
           </button>
 
-          {/* Shield / Auth */}
           <button
+            onClick={() => setActivePage("dashboard")}
             className="flex items-center justify-center w-9 h-9 rounded-lg transition-colors ml-1"
             style={{ color: "var(--text-muted)" }}
             title="API Security"
@@ -126,8 +115,14 @@ export default function CommandBar() {
             <Shield size={17} />
           </button>
 
-          {/* Notifications */}
           <button
+            onClick={() => {
+              if (notificationCount > 0) {
+                setPendingChatPrompt(`Show my ${notificationCount} newest notifications.`);
+                setActivePage("chat");
+                setChatOpen(true);
+              }
+            }}
             className="relative flex items-center justify-center w-9 h-9 rounded-lg transition-colors"
             style={{ color: "var(--text-muted)" }}
             title="Notifications"
@@ -149,7 +144,6 @@ export default function CommandBar() {
             )}
           </button>
 
-          {/* User avatar */}
           <div
             className="flex items-center gap-2 ml-2 pl-3 border-l"
             style={{ borderColor: "var(--border-subtle)" }}
@@ -177,10 +171,7 @@ export default function CommandBar() {
         </div>
       </header>
 
-      <IntegrationsModal
-        isOpen={isIntegrationsOpen}
-        onClose={() => setIsIntegrationsOpen(false)}
-      />
+      <IntegrationsModal isOpen={isIntegrationsOpen} onClose={() => setIsIntegrationsOpen(false)} />
     </>
   );
 }

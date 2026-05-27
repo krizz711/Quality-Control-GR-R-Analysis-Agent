@@ -1,4 +1,7 @@
-const BACKEND_URL = process.env.API_URL || 'http://localhost:8000';
+const BACKEND_URL = (process.env.API_URL || 'http://127.0.0.1:8000').replace(
+  'http://localhost:8000',
+  'http://127.0.0.1:8000'
+);
 const API_AUTH_KEY = process.env.API_AUTH_KEY || '';
 
 function getTargetUrl(pathSegments: string[] | undefined, search: string) {
@@ -8,9 +11,10 @@ function getTargetUrl(pathSegments: string[] | undefined, search: string) {
 
 async function proxyRequest(
   request: Request,
-  { params }: { params: { path?: string[] } }
+  context: { params: Promise<{ path?: string[] }> }
 ) {
-  const targetUrl = getTargetUrl(params.path, new URL(request.url).search);
+  const params = await context.params;
+  const targetUrl = getTargetUrl(params?.path, new URL(request.url).search);
   const method = request.method.toUpperCase();
   const headers = new Headers(request.headers);
 
@@ -24,17 +28,37 @@ async function proxyRequest(
 
   const body = method === 'GET' || method === 'HEAD' ? undefined : await request.arrayBuffer();
 
-  const response = await fetch(targetUrl, {
-    method,
-    headers,
-    body,
-    redirect: 'manual',
-  });
+  // Add a timeout and error logging to help debug proxy issues
+  const controller = new AbortController();
+  const timeoutMs = 25000; // 25s
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  return new Response(response.body, {
-    status: response.status,
-    headers: response.headers,
-  });
+  try {
+    const response = await fetch(targetUrl, {
+      method,
+      headers,
+      body,
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    return new Response(response.body, {
+      status: response.status,
+      headers: response.headers,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    // Log detailed error server-side for debugging
+    // eslint-disable-next-line no-console
+    console.error('proxyRequest error fetching', targetUrl.toString(), err);
+    const message = err?.message || String(err);
+    return new Response(message, {
+      status: 502,
+      headers: { 'content-type': 'text/plain' },
+    });
+  }
 }
 
 export const GET = proxyRequest;

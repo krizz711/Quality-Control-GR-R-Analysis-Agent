@@ -16,6 +16,8 @@ interface AppState {
   // Chat
   chatOpen: boolean;
   setChatOpen: (open: boolean) => void;
+  pendingChatPrompt: string;
+  setPendingChatPrompt: (prompt: string) => void;
 
   // Notifications
   notificationCount: number;
@@ -34,6 +36,8 @@ export const useAppStore = create<AppState>((set) => ({
 
   chatOpen: false,
   setChatOpen: (open) => set({ chatOpen: open }),
+  pendingChatPrompt: "",
+  setPendingChatPrompt: (prompt) => set({ pendingChatPrompt: prompt }),
 
   notificationCount: 3,
   setNotificationCount: (count) => set({ notificationCount: count }),

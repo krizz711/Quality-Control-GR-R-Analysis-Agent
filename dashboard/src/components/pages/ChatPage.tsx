@@ -1,12 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send,
   Sparkles,
   User,
-  BarChart3,
   AlertTriangle,
   CheckCircle2,
   Copy,
@@ -14,12 +13,12 @@ import {
   ThumbsDown,
   RotateCcw,
   Lightbulb,
-  ArrowRight,
   XCircle,
-  Gauge,
 } from "lucide-react";
 import { exampleChat, type ChatMessage } from "@/lib/mock-data";
 import { api } from "@/lib/api";
+import { showToast } from "@/api/apiClient";
+import { useAppStore } from "@/lib/store";
 
 const container = {
   hidden: { opacity: 0 },
@@ -120,50 +119,45 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { pendingChatPrompt, setPendingChatPrompt } = useAppStore();
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  const sendMessage = useCallback(async (prompt: string) => {
+    const userText = prompt.trim();
+    if (!userText) {
+      return;
     }
-  }, [messages, isTyping]);
 
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    
-    const userText = input.trim();
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       role: "user",
       content: userText,
       timestamp: new Date(),
     };
-    
+
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsTyping(true);
 
     try {
-      // Map previous messages to the format expected by the backend
       const history = messages
-        .filter(m => m.id !== "welcome") // ignore fake welcome messages if any
-        .map(m => ({
-          role: m.role,
-          content: m.content
+        .filter((message) => message.id !== "welcome")
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
         }));
 
-      // Call the FastAPI backend /chat endpoint
       const data = await api.post<{ answer: string; context_used: string[] }>("/chat", {
         question: userText,
         conversation_history: history,
       });
-      
+
       const aiMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,
         role: "assistant",
         content: data.answer || "I received empty response from the AI.",
         timestamp: new Date(),
       };
-      
+
       setMessages((prev) => [...prev, aiMsg]);
     } catch (err) {
       console.error("Chat API Error:", err);
@@ -177,6 +171,52 @@ export default function ChatPage() {
     } finally {
       setIsTyping(false);
     }
+  }, [messages]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, isTyping]);
+
+  useEffect(() => {
+    if (!pendingChatPrompt) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void sendMessage(pendingChatPrompt);
+      setPendingChatPrompt("");
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [pendingChatPrompt, sendMessage, setPendingChatPrompt]);
+
+  const handleSend = async () => {
+    await sendMessage(input);
+  };
+
+  const handleCopy = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      showToast("Message copied to clipboard.");
+    } catch {
+      showToast("Copy failed.");
+    }
+  };
+
+  const handleFeedback = (kind: "helpful" | "not helpful") => {
+    showToast(kind === "helpful" ? "Thanks for the feedback." : "Feedback recorded.");
+  };
+
+  const handleRegenerate = async () => {
+    const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+    if (!lastUserMessage) {
+      showToast("No user prompt to regenerate.");
+      return;
+    }
+
+    await sendMessage(lastUserMessage.content);
   };
 
   const handleSuggestion = (text: string) => {
@@ -298,6 +338,7 @@ export default function ChatPage() {
                 {msg.role === "assistant" && (
                   <div className="flex items-center gap-1 mt-3 pt-3 border-t" style={{ borderColor: "var(--border-subtle)" }}>
                     <button
+                      onClick={() => handleCopy(msg.content)}
                       className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
                       style={{ color: "var(--text-ghost)" }}
                       title="Copy"
@@ -305,6 +346,7 @@ export default function ChatPage() {
                       <Copy size={13} />
                     </button>
                     <button
+                      onClick={() => handleFeedback("helpful")}
                       className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
                       style={{ color: "var(--text-ghost)" }}
                       title="Helpful"
@@ -312,6 +354,7 @@ export default function ChatPage() {
                       <ThumbsUp size={13} />
                     </button>
                     <button
+                      onClick={() => handleFeedback("not helpful")}
                       className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
                       style={{ color: "var(--text-ghost)" }}
                       title="Not helpful"
@@ -319,6 +362,7 @@ export default function ChatPage() {
                       <ThumbsDown size={13} />
                     </button>
                     <button
+                      onClick={() => void handleRegenerate()}
                       className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
                       style={{ color: "var(--text-ghost)" }}
                       title="Regenerate"

@@ -3,14 +3,9 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
-  Activity,
   AlertTriangle,
   CheckCircle2,
-  AlertCircle,
-  ChevronDown,
-  Sparkles,
   Maximize2,
-  Filter,
   RefreshCw,
 } from "lucide-react";
 import {
@@ -23,7 +18,6 @@ import {
   ResponsiveContainer,
   ReferenceLine,
   ReferenceArea,
-  Dot,
 } from "recharts";
 import { type SPCChart } from "@/lib/mock-data";
 import { analyzeSPC, transformSPCResponseToUI } from "@/lib/hooks";
@@ -224,6 +218,7 @@ export default function SPCPage() {
   const [expandedChart, setExpandedChart] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "violations">("all");
   const [charts, setCharts] = useState<SPCChart[]>([]);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   // Simulate real-time data fetching
   useEffect(() => {
@@ -268,7 +263,7 @@ export default function SPCPage() {
       mounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [refreshTick]);
 
   const filtered = filter === "violations" ? charts.filter((c) => c.active_violations.length > 0) : charts;
 
@@ -332,6 +327,7 @@ export default function SPCPage() {
           </div>
 
           <button
+            onClick={() => setRefreshTick((value) => value + 1)}
             className="flex items-center justify-center w-9 h-9 rounded-lg"
             style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-default)", color: "var(--text-muted)" }}
           >

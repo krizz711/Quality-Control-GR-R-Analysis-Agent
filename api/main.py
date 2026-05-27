@@ -36,8 +36,8 @@ from sqlalchemy import text
 from agent.alert_engine import AlertEngine
 from core.config import settings
 from core.logging_config import setup_logging
-from db.database import AsyncSessionLocal
-from db.models import AuditLog, GrrStudy, QualityViolation, ReviewQueue
+from db.database import AsyncSessionLocal, engine
+from db.models import AuditLog, Base, GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 from api.ai_routes import router as ai_router
@@ -53,7 +53,14 @@ app = FastAPI(
     version="0.1.0",
 )
 
-_DEV_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
+
+@app.on_event("startup")
+async def initialize_database_schema() -> None:
+    if engine.url.drivername.startswith("sqlite"):
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+_DEV_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3002", "http://localhost:3004"]
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _RATE_LIMITS = {"general": 100, "ai": 10}
 _AI_RATE_LIMIT_PATHS = {"/api/grr/analyze", "/api/spc/data"}
@@ -153,13 +160,29 @@ async def enforce_rate_limits(request: Request, call_next):
 
 @app.middleware("http")
 async def enforce_api_key(request: Request, call_next):
+    # Allow preflight and auth-exempt paths through
     if request.method == "OPTIONS" or request.url.path in AUTH_EXEMPT_PATHS:
         return await call_next(request)
 
+    # In local development allow requests coming from configured dev origins
+    origin = request.headers.get("origin")
+    if not settings.is_production and origin and origin in _allowed_origins():
+        return await call_next(request)
+
+    # Otherwise require a valid x-api-key header
     if request.headers.get("x-api-key") != settings.api_auth_key:
+        # Ensure CORS headers are present on the error response so browsers don't
+        # hide the real error behind a CORS failure. Mirror the Origin header
+        # when it's allowed, otherwise use the first allowed origin.
+        allowed = _allowed_origins()
+        ac_origin = origin if origin and origin in allowed else (allowed[0] if allowed else "*")
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
             content={"detail": "Could not validate API key"},
+            headers={
+                "Access-Control-Allow-Origin": ac_origin,
+                "Access-Control-Allow-Credentials": "true",
+            },
         )
 
     return await call_next(request)

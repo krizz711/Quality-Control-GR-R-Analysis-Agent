@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { showToast } from "@/api/apiClient";
 
 const navItems = [
   { id: "dashboard", label: "Overview", icon: LayoutDashboard },
@@ -217,6 +218,7 @@ export default function Sidebar() {
         {bottomItems.map((item) => (
           <button
             key={item.id}
+            onClick={() => showToast(`${item.label} is not wired yet.`)}
             className={cn(
               "flex items-center w-full rounded-lg transition-colors duration-150",
               sidebarCollapsed ? "justify-center px-2 py-2.5" : "gap-2.5 px-3 py-2"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -23,6 +23,7 @@ import {
   getDashboardSummary,
   getGRRHistory,
   resolveAlert,
+  showToast,
   type AlertItem,
   type AlertListResponse,
   type AuditLogItem,
@@ -115,13 +116,13 @@ function getSeverityTone(severity?: AlertItem["severity"]) {
   }
 }
 
-function isWithinDays(timestamp: string, days: number) {
+function isWithinDays(timestamp: string, days: number, referenceTime: number) {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) {
     return false;
   }
 
-  return Date.now() - date.getTime() <= days * 24 * 60 * 60 * 1000;
+  return referenceTime - date.getTime() <= days * 24 * 60 * 60 * 1000;
 }
 
 function SkeletonBlock({ className = "" }: { className?: string }) {
@@ -135,10 +136,11 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const dataRef = useRef<DashboardPayload | null>(null);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   const loadDashboard = useCallback(async () => {
-    const hasExistingData = Boolean(dataRef.current);
+    const hasExistingData = hasLoadedOnce;
 
     if (hasExistingData) {
       setRefreshing(true);
@@ -157,9 +159,10 @@ export default function DashboardPage() {
       ]);
 
       const payload = { summary, grrHistory, alerts, auditLog };
-      dataRef.current = payload;
-      setData(payload);
+        setData(payload);
+        setHasLoadedOnce(true);
       setLastUpdated(new Date());
+        setNow(Date.now());
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load dashboard data";
       setError(message);
@@ -167,16 +170,21 @@ export default function DashboardPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [hasLoadedOnce]);
 
   useEffect(() => {
-    void loadDashboard();
+    const initialTimer = window.setTimeout(() => {
+      void loadDashboard();
+    }, 0);
 
     const interval = window.setInterval(() => {
       void loadDashboard();
     }, 30_000);
 
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+    };
   }, [loadDashboard]);
 
   const handleResolveAlert = useCallback(
@@ -192,7 +200,7 @@ export default function DashboardPage() {
     [loadDashboard]
   );
 
-  const dashboard = data ?? dataRef.current;
+  const dashboard = data;
   const summary = dashboard?.summary;
   const grrHistory = dashboard?.grrHistory ?? [];
   const activeAlerts = [...(dashboard?.alerts.items ?? [])].sort(
@@ -200,9 +208,9 @@ export default function DashboardPage() {
   );
   const auditPreview = (dashboard?.auditLog ?? []).slice(0, 5);
 
-  const totalThisWeek = grrHistory.filter((item) => isWithinDays(item.timestamp, 7)).length;
+  const totalThisWeek = grrHistory.filter((item) => isWithinDays(item.timestamp, 7, now)).length;
   const totalPrevWeek = grrHistory.filter((item) => {
-    const age = Date.now() - new Date(item.timestamp).getTime();
+    const age = now - new Date(item.timestamp).getTime();
     return age > 7 * 24 * 60 * 60 * 1000 && age <= 14 * 24 * 60 * 60 * 1000;
   }).length;
   const totalTrend = formatRelativeTrend(totalThisWeek, totalPrevWeek);
@@ -441,7 +449,10 @@ export default function DashboardPage() {
                     Add a monitored process to render live SPC charts and control-limit context.
                   </p>
                 </div>
-                <button className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-900 transition hover:bg-white">
+                <button
+                  onClick={() => showToast("Process registration is not wired yet.")}
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-900 transition hover:bg-white"
+                >
                   <Plus size={14} /> Add Process
                 </button>
               </div>

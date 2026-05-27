@@ -137,7 +137,9 @@ const API_BASE_URL = (() => {
         }).process?.env?.NEXT_PUBLIC_API_URL
       : undefined;
 
-  return viteUrl || nextUrl || "http://localhost:3001";
+  // Force production client to use local backend when not otherwise provided.
+  // Prefer Vite (dev), Next public env (build), fallback to loopback API port.
+  return viteUrl || nextUrl || "http://127.0.0.1:8000";
 })();
 
 const axiosInstance = axios.create({

@@ -197,7 +197,6 @@ export default function GRRPage() {
     handleSubmit,
     trigger,
     getValues,
-    watch,
     formState: { errors },
   } = useForm<GRRFormValues>({
     defaultValues,
@@ -215,11 +214,11 @@ export default function GRRPage() {
   const verdict = currentAnalysis ? grrVerdict(currentAnalysis.grr_percent) : null;
   const analysisPct = currentAnalysis?.grr_percent ?? 0;
 
-  const operators = watch("operators");
-  const parts = watch("parts");
-  const trials = watch("trials");
-  const processName = watch("processName");
-  const partTolerance = watch("partTolerance");
+  const operators = useWatch({ control, name: "operators" });
+  const parts = useWatch({ control, name: "parts" });
+  const trials = useWatch({ control, name: "trials" });
+  const processName = useWatch({ control, name: "processName" });
+  const partTolerance = useWatch({ control, name: "partTolerance" });
 
   const step1Valid = async () => {
     return trigger(["operators", "parts", "trials", "processName", "partTolerance"]);
@@ -315,7 +314,72 @@ export default function GRRPage() {
   };
 
   const exportPdf = () => {
-    showToast("PDF export coming soon.");
+    if (!currentAnalysis) {
+      showToast("Run an analysis before exporting the report.");
+      return;
+    }
+
+    const popup = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
+    if (!popup) {
+      showToast("Popup blocked. Allow popups to export the report.");
+      return;
+    }
+
+    const reportTitle = `${processName || "GR&R"} Report`;
+    const reportHtml = `
+      <!doctype html>
+      <html>
+        <head>
+          <title>${reportTitle}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 32px; color: #111827; }
+            h1 { margin: 0 0 8px; font-size: 28px; }
+            .muted { color: #6b7280; }
+            .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
+            .card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 16px; }
+            .label { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; }
+            .value { font-size: 22px; font-weight: 700; }
+            .full { grid-column: 1 / -1; }
+            pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 0; }
+          </style>
+        </head>
+        <body>
+          <h1>${reportTitle}</h1>
+          <div class="muted">Generated ${new Date().toLocaleString()}</div>
+          <div class="grid">
+            <div class="card">
+              <div class="label">GR&R %</div>
+              <div class="value">${currentAnalysis.grr_percent.toFixed(1)}%</div>
+            </div>
+            <div class="card">
+              <div class="label">Verdict</div>
+              <div class="value">${verdict ?? grrVerdict(currentAnalysis.grr_percent)}</div>
+            </div>
+            <div class="card">
+              <div class="label">Repeatability</div>
+              <div class="value">${currentAnalysis.repeatability.toFixed(4)}</div>
+            </div>
+            <div class="card">
+              <div class="label">Reproducibility</div>
+              <div class="value">${currentAnalysis.reproducibility.toFixed(4)}</div>
+            </div>
+            <div class="card full">
+              <div class="label">AI Analysis</div>
+              <pre>${currentAnalysis.ai_analysis}</pre>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    popup.document.open();
+    popup.document.write(reportHtml);
+    popup.document.close();
+    popup.focus();
+    popup.onload = () => {
+      popup.print();
+      popup.onafterprint = () => popup.close();
+    };
   };
 
   return (
