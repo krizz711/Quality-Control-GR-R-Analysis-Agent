@@ -4,6 +4,8 @@ import httpx
 import uuid
 from datetime import datetime, timezone
 
+import os
+
 from fastapi.testclient import TestClient
 
 from api.main import app
@@ -18,7 +20,7 @@ from db.models import GrrStudy
 
 
 client = TestClient(app)
-HEADERS = {"x-api-key": "arad-secret-key"}  # Added auth header
+HEADERS = {"x-api-key": os.environ["API_AUTH_KEY"]}
 
 
 # ── LLM Analyst Unit Tests (Mocking HTTPX) ──────────────────────────────────

@@ -29,6 +29,8 @@ CREATE TABLE grr_studies (
     pv DOUBLE PRECISION,
     grr_pct DOUBLE PRECISION,
     ndc INTEGER,
+    operator_count INTEGER,
+    part_count INTEGER,
     acceptance_decision VARCHAR(32),
     report_path TEXT,
     started_at TIMESTAMPTZ,
@@ -84,3 +86,19 @@ CREATE TABLE audit_logs (
 
 CREATE INDEX ON audit_logs (entity_type, entity_id, created_at DESC);
 CREATE INDEX ON audit_logs (actor, created_at DESC);
+
+CREATE TABLE alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type VARCHAR(32) NOT NULL,
+    severity VARCHAR(16) NOT NULL,
+    message TEXT NOT NULL,
+    process_name VARCHAR(128) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    resolved_by VARCHAR(128)
+);
+
+CREATE INDEX ON alerts (status, severity, created_at DESC);
+CREATE INDEX ON alerts (process_name, created_at DESC);

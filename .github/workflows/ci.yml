@@ -39,7 +39,7 @@ jobs:
         run: npm ci
       - name: Build dashboard
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:8000
-          NEXT_PUBLIC_API_KEY: ci-test-api-key
+          API_URL: http://localhost:8000
+          API_AUTH_KEY: ci-test-api-key
           NEXT_PUBLIC_ALLOW_MOCK_DATA: "false"
         run: npm run build

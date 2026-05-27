@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     log_level: str = "INFO"
-    api_auth_key: str = "arad-secret-key"
+    api_auth_key: str
+    frontend_url: str = ""
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     allow_mock_data: bool = False
 
@@ -46,8 +47,11 @@ class Settings(BaseSettings):
         if not self.is_production:
             return self
 
-        if self.api_auth_key == "arad-secret-key" or len(self.api_auth_key) < 32:
+        if len(self.api_auth_key) < 32:
             raise ValueError("API_AUTH_KEY must be rotated to a strong secret in production")
+
+        if not self.frontend_url.strip():
+            raise ValueError("FRONTEND_URL must be configured in production")
 
         if "*" in self.cors_origin_list:
             raise ValueError("CORS_ORIGINS must not contain '*' in production")

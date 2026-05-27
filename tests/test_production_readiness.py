@@ -17,12 +17,12 @@ def test_business_endpoints_require_api_key() -> None:
     assert response.status_code == 403
 
 
-def test_production_rejects_default_api_key() -> None:
+def test_production_rejects_short_api_key() -> None:
     with pytest.raises(ValidationError, match="API_AUTH_KEY"):
         Settings(
             database_url="postgresql+asyncpg://user:pass@db:5432/arad_quality",
             environment="production",
-            api_auth_key="arad-secret-key",
+            api_auth_key="short-secret",
             gemini_api_key="",
             slack_webhook_url="",
         )

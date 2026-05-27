@@ -12,17 +12,20 @@ Endpoints:
 
 from __future__ import annotations
 
-import logging
-import time
+from collections import defaultdict, deque
+from datetime import datetime, timezone
 from typing import Any
-
+import os
+import time
 import uuid
+import logging
+
 import numpy as np
 import pandas as pd
 import mlflow
-from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Request, status, Depends, Header
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Gauge, Histogram
@@ -38,6 +41,7 @@ from db.models import AuditLog, GrrStudy, QualityViolation, ReviewQueue
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 from api.ai_routes import router as ai_router
+from api.quality_routes import router as quality_router
 
 setup_logging(level=settings.log_level)
 
@@ -49,18 +53,102 @@ app = FastAPI(
     version="0.1.0",
 )
 
+_DEV_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:5173"]
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMITS = {"general": 100, "ai": 10}
+_AI_RATE_LIMIT_PATHS = {"/api/grr/analyze", "/api/spc/data"}
+_rate_limit_counters: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+
+
+def _allowed_origins() -> list[str]:
+    if settings.is_production:
+        frontend_url = settings.frontend_url.strip()
+        if not frontend_url:
+            raise RuntimeError("FRONTEND_URL must be configured in production")
+        return [frontend_url]
+    return _DEV_CORS_ORIGINS
+
+
+def _client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _check_rate_limit(request: Request) -> tuple[bool, str | None, int | None]:
+    if request.method == "OPTIONS" or request.url.path in AUTH_EXEMPT_PATHS:
+        return True, None, None
+
+    now = time.monotonic()
+    client_ip = _client_ip(request)
+    scopes = [("general", _RATE_LIMITS["general"])]
+    if request.url.path in _AI_RATE_LIMIT_PATHS:
+        scopes.append(("ai", _RATE_LIMITS["ai"]))
+
+    for scope, limit in scopes:
+        bucket = _rate_limit_counters[(client_ip, scope)]
+        while bucket and now - bucket[0] > _RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return False, scope, limit
+
+    for scope, _ in scopes:
+        _rate_limit_counters[(client_ip, scope)].append(now)
+
+    return True, None, None
+
+
+def _error_response(
+    *,
+    message: str,
+    code: str = "INTERNAL_ERROR",
+    status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": True, "message": message, "code": code},
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(ai_router)
+app.include_router(quality_router, prefix="/api")
 
 
 AUTH_EXEMPT_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def enforce_rate_limits(request: Request, call_next):
+    allowed, scope, limit = _check_rate_limit(request)
+    if not allowed:
+        logger.warning(
+            "rate_limit_exceeded path=%s ip=%s scope=%s limit=%s",
+            request.url.path,
+            _client_ip(request),
+            scope,
+            limit,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": True,
+                "message": "Rate limit exceeded",
+                "code": "RATE_LIMIT_EXCEEDED",
+            },
+        )
+
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -78,25 +166,61 @@ async def enforce_api_key(request: Request, call_next):
 
 
 @app.middleware("http")
-async def log_requests(request, call_next):
-    import time
-    import uuid
-
+async def log_requests(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
-    start = time.time()
+    start = time.perf_counter()
     response = await call_next(request)
-    duration_ms = round((time.time() - start) * 1000)
-    logging.getLogger("api").info(
-        "request",
-        extra={
-            "request_id": request_id,
-            "method": request.method,
-            "path": request.url.path,
-            "status_code": response.status_code,
-            "duration_ms": duration_ms,
-        },
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(
+        "request_id=%s method=%s path=%s status_code=%s response_time_ms=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
     )
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    logger.warning(
+        "request_validation_error path=%s errors=%s",
+        request.url.path,
+        exc.errors(),
+    )
+    message = exc.errors()[0].get("msg", "Request validation failed") if exc.errors() else "Request validation failed"
+    return _error_response(
+        message=message,
+        code="VALIDATION_ERROR",
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    logger.warning(
+        "http_error path=%s status_code=%s detail=%s",
+        request.url.path,
+        exc.status_code,
+        exc.detail,
+    )
+    message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    code = getattr(exc, "code", None) or "HTTP_ERROR"
+    return _error_response(message=message, code=code, status_code=exc.status_code)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("unhandled_error path=%s", request.url.path)
+    return _error_response(
+        message="An unexpected error occurred" if settings.is_production else str(exc),
+        code="INTERNAL_ERROR",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
 
 
 # Counter: total GRR studies run, labelled by acceptance level
@@ -264,6 +388,8 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
                 pv=result.part_variation,
                 grr_pct=result.total_grr,
                 ndc=result.ndc,
+                operator_count=len(body.operator_ids),
+                part_count=len(body.part_ids),
                 acceptance_decision=verdict.level.value,
                 started_at=now,
                 completed_at=now
@@ -289,6 +415,8 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
                         "characteristic_name": characteristic_name,
                         "grr_pct": result.total_grr,
                         "ndc": result.ndc,
+                        "operator_count": len(body.operator_ids),
+                        "part_count": len(body.part_ids),
                         "acceptance": verdict.level.value,
                         "requires_human_review": verdict.requires_human_review,
                     },

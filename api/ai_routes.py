@@ -2,7 +2,7 @@
 Phase 6 API additions — AI-powered quality intelligence endpoints.
 
 New endpoints:
-  POST /studies/{study_id}/narrative   — Claude GR&R narrative + root cause
+    POST /studies/{study_id}/narrative   — Gemini GR&R narrative + root cause
   POST /spc/predict                    — Predictive quality risk before violations
   POST /spc/interpret                  — NL interpretation of SPC violations
   POST /chat                           — Conversational quality engineering agent
@@ -198,7 +198,7 @@ async def _build_system_context() -> dict[str, Any]:
     response_model=GRRNarrativeResponse,
     summary="Generate AI narrative for a GR&R study",
     description=(
-        "Uses Claude to generate a natural-language GR&R study report including "
+        "Uses Gemini to generate a natural-language GR&R study report including "
         "root-cause analysis, corrective action recommendations, and production "
         "risk assessment. Study must already exist in the database."
     ),
@@ -355,7 +355,7 @@ async def interpret_spc(body: SPCInterpretRequest) -> SPCInterpretResponse:
     response_model=PredictResponse,
     summary="Predict quality violations before they occur",
     description=(
-        "Claude analyzes measurement trends and predicts future violations "
+        "Gemini analyzes measurement trends and predicts future violations "
         "before Nelson rules fire. Acts as an early-warning system."
     ),
 )
@@ -386,7 +386,7 @@ async def predict_violations(body: PredictRequest) -> PredictResponse:
     summary="Conversational quality engineering agent",
     description=(
         "Ask quality engineering questions in plain English. "
-        "Claude has access to current GR&R studies, SPC violations, "
+        "Gemini has access to current GR&R studies, SPC violations, "
         "and pending reviews. Maintains conversation context across turns."
     ),
 )

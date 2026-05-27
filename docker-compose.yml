@@ -100,7 +100,7 @@ services:
       JIRA_PROJECT_KEY: ${JIRA_PROJECT_KEY:-QUAL}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      API_AUTH_KEY: ${API_AUTH_KEY:-arad-secret-key}
+      API_AUTH_KEY: ${API_AUTH_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       ALLOW_MOCK_DATA: "false"
     healthcheck:
@@ -123,7 +123,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      API_AUTH_KEY: ${API_AUTH_KEY:-arad-secret-key}
+      API_AUTH_KEY: ${API_AUTH_KEY}
     restart: unless-stopped
     networks:
       - arad-network
@@ -131,16 +131,16 @@ services:
   dashboard:
     build:
       context: ./dashboard
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-        NEXT_PUBLIC_API_KEY: ${API_AUTH_KEY:-arad-secret-key}
-        NEXT_PUBLIC_ALLOW_MOCK_DATA: ${NEXT_PUBLIC_ALLOW_MOCK_DATA:-false}
     image: arad-quality-agent-dashboard:0.1.0
     depends_on:
       api:
         condition: service_healthy
     ports:
       - "3000:3000"
+    environment:
+      API_URL: ${API_URL:-http://api:8000}
+      API_AUTH_KEY: ${API_AUTH_KEY}
+      NEXT_PUBLIC_ALLOW_MOCK_DATA: ${NEXT_PUBLIC_ALLOW_MOCK_DATA:-false}
     networks:
       - arad-network
 

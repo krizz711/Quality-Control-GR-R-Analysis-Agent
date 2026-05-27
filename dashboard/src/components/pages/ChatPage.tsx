@@ -19,6 +19,7 @@ import {
   Gauge,
 } from "lucide-react";
 import { exampleChat, type ChatMessage } from "@/lib/mock-data";
+import { api } from "@/lib/api";
 
 const container = {
   hidden: { opacity: 0 },
@@ -151,23 +152,10 @@ export default function ChatPage() {
         }));
 
       // Call the FastAPI backend /chat endpoint
-      const response = await fetch("http://localhost:8000/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": "dev-key-123", // Using a dummy dev key or whatever is configured
-        },
-        body: JSON.stringify({
-          question: userText,
-          conversation_history: history
-        }),
+      const data = await api.post<{ answer: string; context_used: string[] }>("/chat", {
+        question: userText,
+        conversation_history: history,
       });
-
-      if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
-      }
-
-      const data = await response.json();
       
       const aiMsg: ChatMessage = {
         id: `msg-${Date.now() + 1}`,

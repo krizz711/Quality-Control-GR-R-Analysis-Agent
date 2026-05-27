@@ -1,479 +1,819 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { useMemo, useState, type ReactNode } from "react";
+import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import {
   AlertCircle,
-  AlertTriangle,
-  BarChart3,
-  CheckCircle2,
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
   Download,
-  FileText,
-  FlaskConical,
+  FileUp,
+  Gauge,
   Loader2,
-  Play,
-  ShieldCheck,
-  Timer,
-  Users,
-  XCircle,
+  Plus,
+  RefreshCw,
+  Save,
+  Sparkles,
+  Table2,
+  Upload,
+  Wand2,
 } from "lucide-react";
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import { downloadGRRReport, useGRRReviews } from "@/lib/hooks";
-import { grrStudies } from "@/lib/mock-data";
-import type { UIGRRStudy } from "@/lib/types";
-import { formatPercent, grrVerdict, timeAgo } from "@/lib/utils";
+  showToast,
+  submitGRRAnalysis,
+  type GRRAnalysisResponse,
+  type GRRInputMeasurement,
+} from "@/api/apiClient";
+import { formatPercent, grrVerdict } from "@/lib/utils";
 
-const container = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.05 } },
+type Step = 1 | 2 | 3;
+
+type MeasurementRow = GRRInputMeasurement;
+
+type GRRFormValues = {
+  operators: number;
+  parts: number;
+  trials: number;
+  partTolerance?: number;
+  processName: string;
+  measurements: MeasurementRow[];
 };
 
-const item = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" as const } },
+type AnalysisState = {
+  result: GRRAnalysisResponse | null;
+  loading: boolean;
+  error: string | null;
 };
 
-const demoStudies: UIGRRStudy[] = grrStudies.map((study) => ({
-  id: study.id,
-  equipment_id: study.equipment_id,
-  characteristic_name: study.characteristic_name,
-  grr_pct: study.grr_pct,
-  ndc: study.ndc,
-  acceptance: study.verdict === "unacceptable" ? "not_acceptable" : study.verdict,
-  ev: study.ev,
-  av: study.av,
-  pv: study.pv,
-  created_at: study.created_at,
-  ai_narrative: study.ai_narrative,
-}));
+const stepLabels = ["Setup", "Data Entry", "Analysis"] as const;
 
-const CustomTooltip = ({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: Array<{ value: number; name: string; color?: string; payload?: { fill?: string } }>;
-  label?: string;
-}) => {
-  if (!active || !payload?.length) return null;
+const defaultValues: GRRFormValues = {
+  operators: 3,
+  parts: 10,
+  trials: 2,
+  processName: "",
+  partTolerance: undefined,
+  measurements: [],
+};
+
+const inputClass =
+  "w-full rounded-2xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-500/20";
+
+function formatTimestamp(date: Date | string) {
+  const value = typeof date === "string" ? new Date(date) : date;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+}
+
+function getGaugeColor(pct: number) {
+  if (pct < 10) return "#22c55e";
+  if (pct <= 30) return "#eab308";
+  return "#ef4444";
+}
+
+function parseCsv(text: string) {
+  const rows = text
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+
+  if (rows.length < 2) {
+    throw new Error("CSV needs a header row and at least one data row");
+  }
+
+  const headers = rows[0].split(",").map((value) => value.trim().toLowerCase());
+  const required = ["operator", "part", "trial", "value"];
+  for (const header of required) {
+    if (!headers.includes(header)) {
+      throw new Error(`CSV must include ${required.join(", ")} columns`);
+    }
+  }
+
+  return rows.slice(1).map((row) => {
+    const cells = row.split(",").map((value) => value.trim());
+    const record: Record<string, string> = {};
+
+    headers.forEach((header, index) => {
+      record[header] = cells[index] ?? "";
+    });
+
+    return {
+      operator: record.operator,
+      part: Number(record.part),
+      trial: Number(record.trial),
+      value: Number(record.value),
+    };
+  });
+}
+
+function createMeasurementRows(operators: number, parts: number, trials: number) {
+  const rows: MeasurementRow[] = [];
+
+  for (let operatorIndex = 1; operatorIndex <= operators; operatorIndex += 1) {
+    for (let partIndex = 1; partIndex <= parts; partIndex += 1) {
+      for (let trialIndex = 1; trialIndex <= trials; trialIndex += 1) {
+        rows.push({
+          operator: `Operator ${operatorIndex}`,
+          part: partIndex,
+          trial: trialIndex,
+          value: Number.NaN,
+        });
+      }
+    }
+  }
+
+  return rows;
+}
+
+function computeGrandMean(measurements: MeasurementRow[]) {
+  const values = measurements.map((row) => row.value).filter((value) => Number.isFinite(value));
+  if (!values.length) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function GaugeChart({ value }: { value: number }) {
+  const clamped = Math.min(Math.max(value, 0), 100);
+  const angle = -90 + (clamped / 100) * 180;
+  const color = getGaugeColor(clamped);
 
   return (
-    <div
-      className="rounded-lg px-3 py-2 text-[11px]"
-      style={{
-        background: "var(--bg-elevated)",
-        border: "1px solid var(--border-default)",
-        boxShadow: "var(--shadow-lg)",
-      }}
-    >
-      {label && (
-        <div className="mb-1 font-medium" style={{ color: "var(--text-primary)" }}>
-          {label}
-        </div>
-      )}
-      {payload.map((entry, index) => (
-        <div key={index} className="flex items-center gap-2">
-          <span
-            className="h-2 w-2 rounded-full"
-            style={{ background: entry.color || entry.payload?.fill || "var(--accent)" }}
-          />
-          <span style={{ color: "var(--text-secondary)" }}>
-            {entry.name}: {entry.value.toFixed(1)}
-          </span>
-        </div>
-      ))}
+    <div className="relative mx-auto h-56 w-56">
+      <div
+        className="absolute inset-0 rounded-full"
+        style={{
+          background:
+            "conic-gradient(from 180deg, #22c55e 0deg 36deg, #eab308 36deg 108deg, #ef4444 108deg 180deg, transparent 180deg 360deg)",
+          mask: "radial-gradient(circle at center, transparent 54%, black 55%)",
+          WebkitMask: "radial-gradient(circle at center, transparent 54%, black 55%)",
+        }}
+      />
+      <div className="absolute inset-6 rounded-full bg-slate-900 shadow-inner shadow-black/40" />
+      <div
+        className="absolute left-1/2 top-1/2 h-[92px] w-1 origin-bottom rounded-full bg-slate-100"
+        style={{ transform: `translate(-50%, -100%) rotate(${angle}deg)` }}
+      />
+      <div
+        className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-slate-950"
+        style={{ background: color }}
+      />
+      <div className="absolute inset-x-0 bottom-10 text-center">
+        <div className="text-4xl font-semibold text-slate-50">{clamped.toFixed(1)}%</div>
+        <div className="mt-2 text-xs uppercase tracking-[0.24em] text-slate-500">GR&R</div>
+      </div>
     </div>
   );
-};
+}
 
-function StatusIcon({ acceptance }: { acceptance: UIGRRStudy["acceptance"] }) {
-  if (acceptance === "acceptable") return <CheckCircle2 size={16} style={{ color: "var(--success)" }} />;
-  if (acceptance === "conditional") return <AlertCircle size={16} style={{ color: "var(--warning)" }} />;
-  return <XCircle size={16} style={{ color: "var(--critical)" }} />;
+function StepBadge({ step, active }: { step: number; active: boolean }) {
+  return (
+    <div
+      className={`flex h-9 w-9 items-center justify-center rounded-full border text-sm font-semibold ${
+        active ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-slate-700 bg-slate-900 text-slate-500"
+      }`}
+    >
+      {step}
+    </div>
+  );
 }
 
 export default function GRRPage() {
-  const { data: reviews, loading, error, retry } = useGRRReviews();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [step, setStep] = useState<Step>(1);
+  const [analysis, setAnalysis] = useState<AnalysisState>({ result: null, loading: false, error: null });
+  const [tableReady, setTableReady] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 
-  const allowMockData =
-    process.env.NEXT_PUBLIC_ALLOW_MOCK_DATA === "true" || process.env.NODE_ENV !== "production";
-  const studies = reviews && reviews.length > 0 ? reviews : allowMockData ? demoStudies : [];
-  const currentStudy = studies.find((study) => study.id === selectedId) || studies[0];
-  const usingDemoData = studies.length > 0 && (!reviews || reviews.length === 0);
+  const {
+    register,
+    control,
+    handleSubmit,
+    trigger,
+    getValues,
+    watch,
+    formState: { errors },
+  } = useForm<GRRFormValues>({
+    defaultValues,
+    mode: "onBlur",
+  });
 
-  useEffect(() => {
-    if (!selectedId && studies.length > 0) {
-      setSelectedId(studies[0].id);
+  const { fields, replace } = useFieldArray({
+    control,
+    name: "measurements",
+  });
+
+  const measurements = useWatch({ control, name: "measurements" });
+  const grandMean = useMemo(() => computeGrandMean(measurements || []), [measurements]);
+  const currentAnalysis = analysis.result;
+  const verdict = currentAnalysis ? grrVerdict(currentAnalysis.grr_percent) : null;
+  const analysisPct = currentAnalysis?.grr_percent ?? 0;
+
+  const operators = watch("operators");
+  const parts = watch("parts");
+  const trials = watch("trials");
+  const processName = watch("processName");
+  const partTolerance = watch("partTolerance");
+
+  const step1Valid = async () => {
+    return trigger(["operators", "parts", "trials", "processName", "partTolerance"]);
+  };
+
+  const generateTable = async () => {
+    const valid = await step1Valid();
+    if (!valid) {
+      return;
     }
-  }, [selectedId, studies]);
 
-  const grrComparisonData = useMemo(
-    () =>
-      studies.map((study) => ({
-        name: study.equipment_id,
-        grr: study.grr_pct,
-        fill:
-          study.grr_pct <= 10
-            ? "var(--success)"
-            : study.grr_pct <= 30
-              ? "var(--warning)"
-              : "var(--critical)",
-      })),
-    [studies],
-  );
+    const values = getValues();
+    const rows = createMeasurementRows(values.operators, values.parts, values.trials);
+    replace(rows);
+    setTableReady(true);
+    setStep(2);
+    setAnalysis({ result: null, loading: false, error: null });
+  };
 
-  const contributionData = useMemo(() => {
-    const ev = currentStudy?.ev || 0;
-    const av = currentStudy?.av || 0;
-    const pv = currentStudy?.pv || 0;
-    const total = ev + av + pv;
-
-    if (!total) return [];
-
-    return [
-      { name: "Repeatability", value: Number(((ev / total) * 100).toFixed(1)), fill: "var(--accent)" },
-      { name: "Reproducibility", value: Number(((av / total) * 100).toFixed(1)), fill: "var(--warning)" },
-      { name: "Part Variation", value: Number(((pv / total) * 100).toFixed(1)), fill: "var(--success)" },
-    ];
-  }, [currentStudy]);
-
-  const handleDownloadPDF = async () => {
-    if (!currentStudy) return;
-
+  const fillMeasurementsFromCsv = async (file: File) => {
+    setImporting(true);
     try {
-      setDownloadingPdf(true);
-      await downloadGRRReport(currentStudy.id);
-    } catch {
-      window.alert("PDF export requires a live backend study record.");
+      const text = await file.text();
+      const importedRows = parseCsv(text);
+
+      if (!fields.length) {
+        throw new Error("Generate the measurement table before importing CSV data");
+      }
+
+      const nextRows = fields.map((field) => {
+        const match = importedRows.find(
+          (row) => row.operator === field.operator && row.part === field.part && row.trial === field.trial,
+        );
+        return {
+          operator: field.operator,
+          part: field.part,
+          trial: field.trial,
+          value: match?.value ?? Number.NaN,
+        };
+      });
+
+      replace(nextRows);
+      showToast("CSV imported into the measurement table.");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "CSV import failed");
     } finally {
-      setDownloadingPdf(false);
+      setImporting(false);
     }
   };
 
-  const verdict = currentStudy
-    ? grrVerdict(currentStudy.grr_pct)
-    : { label: "No Data", color: "var(--text-muted)", badge: "badge-info" };
+  const runAnalysis = async (values: GRRFormValues) => {
+    if (!values.measurements.length) {
+      setAnalysis({ result: null, loading: false, error: "Generate the measurement table first." });
+      return;
+    }
+
+    const payload = {
+      measurements: values.measurements.map((row) => ({
+        operator: row.operator,
+        part: row.part,
+        trial: row.trial,
+        value: row.value,
+      })),
+      part_tolerance: values.partTolerance,
+    };
+
+    setAnalysis({ result: null, loading: true, error: null });
+    setStep(3);
+
+    try {
+      const result = await submitGRRAnalysis(payload);
+      setAnalysis({ result, loading: false, error: null });
+      setLastSavedAt(new Date());
+    } catch (error) {
+      setAnalysis({
+        result: null,
+        loading: false,
+        error: error instanceof Error ? error.message : "GR&R analysis failed",
+      });
+    }
+  };
+
+  const retryAnalysis = () => {
+    void handleSubmit(runAnalysis)();
+  };
+
+  const saveToHistory = () => {
+    showToast("Analysis already saved to history by the backend.");
+    setLastSavedAt(new Date());
+  };
+
+  const exportPdf = () => {
+    showToast("PDF export coming soon.");
+  };
 
   return (
-    <motion.div
-      variants={container}
-      initial="hidden"
-      animate="show"
-      className="h-full overflow-y-auto p-6"
-      style={{ background: "var(--bg-root)" }}
-    >
-      <div className="mx-auto flex max-w-7xl flex-col gap-5">
-        <motion.div variants={item} className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="mb-2 flex items-center gap-2">
-              <FlaskConical size={18} style={{ color: "var(--accent)" }} />
-              <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>
-                GR&R Analysis Center
-              </h1>
-            </div>
-            <p className="max-w-2xl text-[12px]" style={{ color: "var(--text-muted)" }}>
-              Automated gage repeatability and reproducibility studies with AIAG MSA thresholds, review routing, and audit-ready reporting.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {error && (
-              <button
-                onClick={retry}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium"
-                style={{ background: "var(--warning-bg)", color: "var(--warning)", border: "1px solid rgba(251,191,36,0.16)" }}
-              >
-                <AlertTriangle size={14} />
-                Retry backend
-              </button>
-            )}
-            <button
-              onClick={handleDownloadPDF}
-              disabled={!currentStudy || downloadingPdf || usingDemoData}
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)", border: "1px solid var(--border-default)" }}
-            >
-              {downloadingPdf ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-              Export PDF
-            </button>
-            <button
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium"
-              style={{ background: "var(--accent)", color: "white" }}
-            >
-              <Play size={14} />
-              New Study
-            </button>
-          </div>
-        </motion.div>
-
-        <motion.div variants={item} className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          {[
-            { label: "Completion Target", value: "<2h", icon: Timer, tone: "var(--success)" },
-            { label: "AIAG Accept Limit", value: "<10%", icon: ShieldCheck, tone: "var(--success)" },
-            { label: "Human Review Band", value: "10-30%", icon: Users, tone: "var(--warning)" },
-            { label: "Active Records", value: String(studies.length), icon: FileText, tone: "var(--accent)" },
-          ].map((metric) => (
-            <div key={metric.label} className="surface-card p-4">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>
-                  {metric.label}
-                </span>
-                <metric.icon size={14} style={{ color: metric.tone }} />
-              </div>
-              <div className="text-2xl font-bold" style={{ color: metric.tone }}>
-                {metric.value}
-              </div>
-            </div>
-          ))}
-        </motion.div>
-
-        {usingDemoData && (
-          <motion.div
-            variants={item}
-            className="flex items-center gap-2 rounded-lg px-4 py-3 text-[12px]"
-            style={{ background: "var(--info-bg)", border: "1px solid rgba(96,165,250,0.12)", color: "var(--text-secondary)" }}
-          >
-            <AlertCircle size={14} style={{ color: "var(--info)" }} />
-            Showing production demo data until the backend returns pending review records.
-          </motion.div>
-        )}
-
-        {!loading && studies.length === 0 && (
-          <motion.div
-            variants={item}
-            className="surface-card flex flex-col items-center justify-center px-6 py-16 text-center"
-          >
-            <FileText size={34} style={{ color: "var(--text-muted)" }} />
-            <h2 className="mt-4 text-base font-semibold" style={{ color: "var(--text-primary)" }}>
-              No live GR&R studies available
-            </h2>
-            <p className="mt-2 max-w-lg text-[12px]" style={{ color: "var(--text-secondary)" }}>
-              Production mode does not show demo data. Connect the API, submit a GR&R study, or set NEXT_PUBLIC_ALLOW_MOCK_DATA=true only for demo environments.
-            </p>
-            {error && (
-              <button
-                onClick={retry}
-                className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium"
-                style={{ background: "var(--accent)", color: "white" }}
-              >
-                Retry backend
-              </button>
-            )}
-          </motion.div>
-        )}
-
-        {studies.length > 0 && (
-        <motion.div variants={item} className="surface-card p-5">
-          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-2">
-              <BarChart3 size={15} style={{ color: "var(--accent)" }} />
-              <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                Equipment GR&R Comparison
-              </span>
-              {loading && <Loader2 size={14} className="animate-spin" style={{ color: "var(--text-muted)" }} />}
-            </div>
-            <div className="flex items-center gap-4">
-              {[
-                ["Accept", "var(--success)", "<=10%"],
-                ["Review", "var(--warning)", "10-30%"],
-                ["Fail", "var(--critical)", ">30%"],
-              ].map(([label, color, value]) => (
-                <div key={label} className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full" style={{ background: color }} />
-                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-                    {value}
-                  </span>
+    <div className="min-h-full bg-slate-950 px-4 py-6 text-slate-100 md:px-6">
+      <div className="mx-auto flex max-w-7xl flex-col gap-6">
+        <header className="rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-5 shadow-[0_18px_55px_rgba(2,6,23,0.45)]">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">
+                  <Sparkles size={20} />
                 </div>
-              ))}
+                <div>
+                  <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
+                    GR&R Analysis Form
+                  </h1>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Three-step measurement system study with live calculations and backend analysis.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
+              <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Current status</div>
+              <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-emerald-300">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(34,197,94,0.12)]" />
+                Ready for measurement entry
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                {lastSavedAt ? `Last saved ${formatTimestamp(lastSavedAt)}` : "Analysis not yet run"}
+              </div>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={210}>
-            <BarChart data={grrComparisonData} barSize={34}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-              <XAxis dataKey="name" tick={{ fill: "var(--text-muted)", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: "var(--text-muted)", fontSize: 11 }} axisLine={false} tickLine={false} domain={[0, 50]} unit="%" />
-              <Tooltip content={<CustomTooltip />} />
-              <Bar dataKey="grr" name="%GR&R" radius={[6, 6, 0, 0]}>
-                {grrComparisonData.map((entry) => (
-                  <Cell key={entry.name} fill={entry.fill} fillOpacity={0.85} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </motion.div>
-        )}
 
-        {studies.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
-          <motion.div variants={item} className="lg:col-span-2">
-            <div className="surface-card overflow-hidden">
-              <div className="flex items-center justify-between border-b px-5 py-4" style={{ borderColor: "var(--border-subtle)" }}>
-                <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                  Study Queue
-                </span>
-                <span className="badge badge-info">{usingDemoData ? "Demo" : "Live"}</span>
+          <div className="mt-6 grid gap-3 md:grid-cols-3">
+            {stepLabels.map((label, index) => (
+              <div
+                key={label}
+                className={`flex items-center gap-3 rounded-2xl border px-4 py-3 ${
+                  step === index + 1
+                    ? "border-emerald-500/20 bg-emerald-500/10"
+                    : "border-slate-800 bg-slate-950/50"
+                }`}
+              >
+                <StepBadge step={index + 1} active={step === index + 1} />
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Step {index + 1}</div>
+                  <div className="text-sm font-semibold text-slate-100">{label}</div>
+                </div>
               </div>
-              <div className="divide-y" style={{ borderColor: "var(--border-subtle)" }}>
-                {studies.map((study) => {
-                  const studyVerdict = grrVerdict(study.grr_pct);
-                  const selected = currentStudy?.id === study.id;
+            ))}
+          </div>
+        </header>
 
-                  return (
+        <form onSubmit={handleSubmit(runAnalysis)} className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+          <div className="space-y-6">
+            {step === 1 && (
+              <section className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+                <SectionHeader
+                  icon={<Wand2 size={16} />}
+                  title="Step 1 - Setup"
+                  description="Define the study size and process metadata before generating the table."
+                />
+
+                <div className="mt-6 grid gap-4 md:grid-cols-2">
+                  <Field label="Number of Operators" error={errors.operators?.message}>
+                    <input
+                      type="number"
+                      min={2}
+                      max={10}
+                      {...register("operators", {
+                        valueAsNumber: true,
+                        required: "Enter operator count",
+                        min: { value: 2, message: "Minimum 2 operators" },
+                        max: { value: 10, message: "Maximum 10 operators" },
+                      })}
+                      className={inputClass}
+                    />
+                  </Field>
+
+                  <Field label="Number of Parts" error={errors.parts?.message}>
+                    <input
+                      type="number"
+                      min={5}
+                      max={25}
+                      {...register("parts", {
+                        valueAsNumber: true,
+                        required: "Enter part count",
+                        min: { value: 5, message: "Minimum 5 parts" },
+                        max: { value: 25, message: "Maximum 25 parts" },
+                      })}
+                      className={inputClass}
+                    />
+                  </Field>
+
+                  <Field label="Number of Trials" error={errors.trials?.message}>
+                    <input
+                      type="number"
+                      min={2}
+                      max={3}
+                      {...register("trials", {
+                        valueAsNumber: true,
+                        required: "Enter trial count",
+                        min: { value: 2, message: "Minimum 2 trials" },
+                        max: { value: 3, message: "Maximum 3 trials" },
+                      })}
+                      className={inputClass}
+                    />
+                  </Field>
+
+                  <Field label="Part Tolerance" error={errors.partTolerance?.message} optional>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      {...register("partTolerance", {
+                        setValueAs: (value) => (value === "" || value === null ? undefined : Number(value)),
+                        min: { value: 0, message: "Tolerance must be positive" },
+                      })}
+                      className={inputClass}
+                      placeholder="Optional"
+                    />
+                  </Field>
+
+                  <Field className="md:col-span-2" label="Process Name" error={errors.processName?.message}>
+                    <input
+                      type="text"
+                      placeholder="e.g. Bore Diameter"
+                      {...register("processName", {
+                        required: "Process name is required",
+                        minLength: { value: 2, message: "Process name is too short" },
+                      })}
+                      className={inputClass}
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-6 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void generateTable()}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                  >
+                    <Table2 size={16} /> Generate Measurement Table
+                  </button>
+                  <div className="text-xs text-slate-500">Defaults: 3 operators, 10 parts, 2 trials</div>
+                </div>
+              </section>
+            )}
+
+            {step === 2 && (
+              <section className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+                <SectionHeader
+                  icon={<FileUp size={16} />}
+                  title="Step 2 - Data Entry"
+                  description="Fill every measurement cell, import CSV data, and preview the grand mean live."
+                />
+
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+                  <div className="text-sm text-slate-300">
+                    <span className="font-semibold text-slate-100">{processName || "Unnamed process"}</span>
+                    <span className="text-slate-500">
+                      {" "}
+                      · {operators} operators · {parts} parts · {trials} trials
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800">
+                      {importing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                      Import CSV
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) {
+                            void fillMeasurementsFromCsv(file);
+                          }
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
                     <button
-                      key={study.id}
-                      onClick={() => setSelectedId(study.id)}
-                      className="flex w-full items-center gap-3 px-5 py-3.5 text-left transition-colors"
-                      style={{
-                        background: selected ? "var(--accent-bg)" : "transparent",
-                        borderLeft: selected ? "2px solid var(--accent)" : "2px solid transparent",
-                      }}
+                      type="button"
+                      onClick={() => setStep(3)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
                     >
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: "var(--bg-elevated)" }}>
-                        <StatusIcon acceptance={study.acceptance} />
+                      Review Analysis Step <ChevronRight size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Grand Mean Preview</div>
+                      <div className="mt-1 text-2xl font-semibold text-slate-50">
+                        {grandMean !== null ? grandMean.toFixed(4) : "—"}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
-                          {study.equipment_id} - {study.characteristic_name}
-                        </div>
-                        <div className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
-                          {study.created_at ? timeAgo(study.created_at) : "Pending review"}
-                        </div>
+                    </div>
+                    <div className="text-right text-xs text-slate-500">Live preview updates as values are entered</div>
+                  </div>
+                </div>
+
+                <div className="mt-5 overflow-hidden rounded-2xl border border-slate-800">
+                  <div className="max-h-[520px] overflow-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="sticky top-0 z-10 bg-slate-900 text-xs uppercase tracking-[0.18em] text-slate-500">
+                        <tr>
+                          <th className="px-4 py-3 font-medium">Operator</th>
+                          <th className="px-4 py-3 font-medium">Part #</th>
+                          <th className="px-4 py-3 font-medium">Trial #</th>
+                          <th className="px-4 py-3 font-medium">Measurement Value</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800 bg-slate-950/30">
+                        {fields.map((field, index) => (
+                          <tr key={field.id} className="transition hover:bg-slate-900/50">
+                            <td className="px-4 py-3 text-slate-300">{field.operator}</td>
+                            <td className="px-4 py-3 text-slate-300">{field.part}</td>
+                            <td className="px-4 py-3 text-slate-300">{field.trial}</td>
+                            <td className="px-4 py-3">
+                              <input
+                                type="number"
+                                step="0.0001"
+                                {...register(`measurements.${index}.value`, {
+                                  valueAsNumber: true,
+                                  required: "Measurement is required",
+                                })}
+                                className={inputClass}
+                                placeholder="Enter value"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                        {!fields.length ? (
+                          <tr>
+                            <td className="px-4 py-10 text-center text-slate-500" colSpan={4}>
+                              Generate the measurement table to begin data entry.
+                            </td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setStep(1)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+                  >
+                    <ArrowLeft size={16} /> Back to Setup
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStep(3)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                  >
+                    Proceed to Analysis <ArrowRight size={16} />
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {step === 3 && (
+              <section className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+                <SectionHeader
+                  icon={<Gauge size={16} />}
+                  title="Step 3 - Analysis"
+                  description="Run the backend GR&R analysis, then review the verdict and AI commentary."
+                />
+
+                <div className="mt-6 flex flex-wrap items-center gap-3">
+                  <button
+                    type="submit"
+                    disabled={analysis.loading}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {analysis.loading ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+                    Run GR&R Analysis
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setStep(2)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+                  >
+                    <ArrowLeft size={16} /> Back to Data Entry
+                  </button>
+                  <div className="text-xs text-slate-500">POST /api/grr/analyze with {measurements?.length || 0} measurements</div>
+                </div>
+
+                {analysis.error && (
+                  <div className="mt-5 rounded-2xl border border-rose-500/20 bg-rose-500/10 p-4 text-sm text-rose-200">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold">Analysis failed</div>
+                        <div className="mt-1 text-rose-100/90">{analysis.error}</div>
                       </div>
-                      <div className="shrink-0 text-right">
-                        <div className="text-sm font-bold" style={{ color: studyVerdict.color }}>
-                          {formatPercent(study.grr_pct)}
-                        </div>
-                        <span className={`badge ${studyVerdict.badge}`} style={{ fontSize: "9px" }}>
-                          {studyVerdict.label}
+                      <button
+                        type="button"
+                        onClick={retryAnalysis}
+                        className="inline-flex items-center gap-2 rounded-xl border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-xs font-semibold text-rose-100 transition hover:bg-rose-400/20"
+                      >
+                        <RefreshCw size={14} /> Retry
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {analysis.loading && (
+                  <div className="mt-5 flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-4 text-sm text-slate-400">
+                    <Loader2 size={16} className="animate-spin text-emerald-300" />
+                    Running statistical analysis on the backend...
+                  </div>
+                )}
+
+                {currentAnalysis && verdict && (
+                  <div className="mt-6 grid gap-5 xl:grid-cols-[320px_1fr]">
+                    <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-5">
+                      <GaugeChart value={analysisPct} />
+                      <div className="mt-4 flex items-center justify-center">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                            currentAnalysis.grr_percent < 10
+                              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                              : currentAnalysis.grr_percent <= 30
+                                ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                                : "border-rose-500/20 bg-rose-500/10 text-rose-300"
+                          }`}
+                        >
+                          {verdict.label}
                         </span>
                       </div>
-                    </button>
-                  );
-                })}
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-3">
+                        {[
+                          { label: "Repeatability %", value: formatPercent(currentAnalysis.repeatability), tone: "text-emerald-300" },
+                          { label: "Reproducibility %", value: formatPercent(currentAnalysis.reproducibility), tone: "text-amber-300" },
+                          { label: "Distinct Categories", value: String(currentAnalysis.number_of_distinct_categories), tone: "text-sky-300" },
+                        ].map((metric) => (
+                          <div key={metric.label} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{metric.label}</div>
+                            <div className={`mt-2 text-2xl font-semibold ${metric.tone}`}>{metric.value}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-5">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">AI Analysis</h3>
+                          <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                            {formatTimestamp(currentAnalysis.timestamp)}
+                          </span>
+                        </div>
+                        <p className="mt-4 whitespace-pre-line text-sm leading-6 text-slate-300">{currentAnalysis.ai_analysis}</p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={saveToHistory}
+                          className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
+                        >
+                          <Save size={16} /> Save to History
+                        </button>
+                        <button
+                          type="button"
+                          onClick={exportPdf}
+                          className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
+                        >
+                          <Download size={16} /> Export PDF Report
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setStep(2)}
+                          className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                        >
+                          <Plus size={16} /> Adjust Measurements
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!analysis.loading && !currentAnalysis && !analysis.error && (
+                  <div className="mt-6 rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 px-6 py-10 text-center">
+                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700 bg-slate-900 text-slate-400">
+                      <Gauge size={18} />
+                    </div>
+                    <h3 className="mt-4 text-sm font-semibold text-slate-200">Ready to analyze</h3>
+                    <p className="mt-1 text-sm text-slate-500">Run the GR&R calculation after confirming the table data.</p>
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+
+          <aside className="space-y-6">
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+              <div className="flex items-center gap-2">
+                <AlertCircle size={16} className="text-slate-300" />
+                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Study Summary</h2>
+              </div>
+
+              <div className="mt-4 grid gap-3">
+                {[
+                  { label: "Operators", value: operators },
+                  { label: "Parts", value: parts },
+                  { label: "Trials", value: trials },
+                  { label: "Tolerance", value: partTolerance ?? "Optional" },
+                  { label: "Process", value: processName || "Not set" },
+                  { label: "Measurements", value: fields.length },
+                ].map((item) => (
+                  <div
+                    key={item.label}
+                    className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm"
+                  >
+                    <span className="text-slate-500">{item.label}</span>
+                    <span className="font-semibold text-slate-100">{item.value}</span>
+                  </div>
+                ))}
               </div>
             </div>
-          </motion.div>
 
-          <motion.div variants={item} className="space-y-4 lg:col-span-3">
-            {currentStudy && (
-              <>
-                <div className="surface-card p-5">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div>
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <h2 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
-                          {currentStudy.equipment_id}
-                        </h2>
-                        <span className={`badge ${verdict.badge}`}>{verdict.label}</span>
-                      </div>
-                      <p className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
-                        {currentStudy.characteristic_name} measurement system validation
-                      </p>
-                    </div>
-                    <div className="text-left md:text-right">
-                      <div className="text-4xl font-black" style={{ color: verdict.color }}>
-                        {formatPercent(currentStudy.grr_pct)}
-                      </div>
-                      <div className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>
-                        total GR&R
-                      </div>
-                    </div>
-                  </div>
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+              <div className="flex items-center gap-2">
+                <Table2 size={16} className="text-slate-300" />
+                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Data Integrity</h2>
+              </div>
 
-                  <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
-                    {[
-                      { label: "EV", value: (currentStudy.ev || 0).toFixed(5), helper: "Repeatability" },
-                      { label: "AV", value: (currentStudy.av || 0).toFixed(5), helper: "Reproducibility" },
-                      { label: "PV", value: (currentStudy.pv || 0).toFixed(5), helper: "Part variation" },
-                      { label: "NDC", value: String(currentStudy.ndc), helper: currentStudy.ndc >= 5 ? "Adequate" : "Inadequate" },
-                    ].map((metric) => (
-                      <div key={metric.label} className="rounded-lg p-3" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)" }}>
-                        <div className="mb-1 text-[10px] font-medium" style={{ color: "var(--text-muted)" }}>
-                          {metric.label}
-                        </div>
-                        <div className="font-mono text-sm font-bold" style={{ color: "var(--text-primary)" }}>
-                          {metric.value}
-                        </div>
-                        <div className="text-[9px]" style={{ color: "var(--text-ghost)" }}>
-                          {metric.helper}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+              <div className="mt-4 space-y-3 text-sm text-slate-300">
+                <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+                  <span className="text-slate-500">Entered values</span>
+                  <span className="font-semibold text-slate-100">
+                    {measurements?.filter((row) => Number.isFinite(row.value)).length || 0}/{fields.length}
+                  </span>
                 </div>
-
-                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                  <div className="surface-card p-5">
-                    <div className="mb-4 flex items-center gap-2">
-                      <BarChart3 size={14} style={{ color: "var(--accent)" }} />
-                      <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-                        Variance Contribution
-                      </span>
-                    </div>
-                    <ResponsiveContainer width="100%" height={210}>
-                      <PieChart>
-                        <Pie data={contributionData} cx="50%" cy="50%" innerRadius={52} outerRadius={82} paddingAngle={3} dataKey="value" stroke="none">
-                          {contributionData.map((entry) => (
-                            <Cell key={entry.name} fill={entry.fill} fillOpacity={0.9} />
-                          ))}
-                        </Pie>
-                        <Tooltip content={<CustomTooltip />} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div className="mt-2 space-y-2">
-                      {contributionData.map((entry) => (
-                        <div key={entry.name} className="flex items-center gap-2">
-                          <span className="h-2.5 w-2.5 rounded" style={{ background: entry.fill }} />
-                          <span className="flex-1 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-                            {entry.name}
-                          </span>
-                          <span className="font-mono text-[11px]" style={{ color: "var(--text-primary)" }}>
-                            {entry.value}%
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="surface-card p-5">
-                    <div className="mb-4 flex items-center gap-2">
-                      <ShieldCheck size={14} style={{ color: "var(--success)" }} />
-                      <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-                        Production Decision
-                      </span>
-                    </div>
-                    <div className="rounded-lg p-4" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)" }}>
-                      <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                        {currentStudy.ai_narrative ||
-                          (currentStudy.grr_pct <= 10
-                            ? "Measurement system is acceptable for production release. Continue routine calibration and audit monitoring."
-                            : currentStudy.grr_pct <= 30
-                              ? "Measurement system is conditionally acceptable and should route to quality engineering review before unrestricted release."
-                              : "Measurement system is not acceptable for production use. Remove from release path, correct the measurement source, and repeat GR&R.")}
-                      </p>
-                    </div>
-                  </div>
+                <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+                  <span className="text-slate-500">Grand mean</span>
+                  <span className="font-semibold text-slate-100">{grandMean !== null ? grandMean.toFixed(4) : "—"}</span>
                 </div>
-              </>
-            )}
-          </motion.div>
-        </div>
-        )}
+                <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+                  <span className="text-slate-500">Analysis ready</span>
+                  <span className="font-semibold text-emerald-300">{tableReady ? "Yes" : "No"}</span>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </form>
       </div>
-    </motion.div>
+    </div>
+  );
+}
+
+function SectionHeader({
+  icon,
+  title,
+  description,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-300">
+          {icon}
+        </div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">{title}</h2>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-slate-400">{description}</p>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  error,
+  children,
+  optional = false,
+  className = "",
+}: {
+  label: string;
+  error?: string;
+  children: ReactNode;
+  optional?: boolean;
+  className?: string;
+}) {
+  return (
+    <label className={`block ${className}`}>
+      <div className="mb-2 flex items-center justify-between gap-2 text-sm">
+        <span className="font-medium text-slate-200">{label}</span>
+        {optional ? <span className="text-xs uppercase tracking-[0.18em] text-slate-500">Optional</span> : null}
+      </div>
+      {children}
+      {error ? <div className="mt-2 text-xs text-rose-300">{error}</div> : null}
+    </label>
   );
 }

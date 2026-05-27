@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import os
+
 from fastapi.testclient import TestClient
 
 from api.main import app
 
-client = TestClient(app, headers={"x-api-key": "arad-secret-key"})
+client = TestClient(app, headers={"x-api-key": os.environ["API_AUTH_KEY"]})
 
 
 def _session_with_execute(mock_session_local: MagicMock, execute_result: MagicMock) -> AsyncMock:

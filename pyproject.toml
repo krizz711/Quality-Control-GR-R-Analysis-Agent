@@ -28,6 +28,7 @@ reportlab = "^4.2"
 python-dotenv = "^1.0"
 pydantic-settings = "^2.6"
 httpx = "^0.28.1"
+google-generativeai = "^0.8.5"
 prometheus-fastapi-instrumentator = "^7.1.0"
 python-json-logger = "^4.1.0"
 

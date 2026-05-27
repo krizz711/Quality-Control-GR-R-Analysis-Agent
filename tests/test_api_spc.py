@@ -6,11 +6,13 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
+import os
+
 from fastapi.testclient import TestClient
 
 from api.main import app
 
-client = TestClient(app, headers={"x-api-key": "arad-secret-key"})
+client = TestClient(app, headers={"x-api-key": os.environ["API_AUTH_KEY"]})
 
 
 @pytest.fixture(autouse=True)

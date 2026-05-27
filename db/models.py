@@ -41,6 +41,8 @@ class GrrStudy(Base):
     pv: Mapped[float | None] = mapped_column(Float)
     grr_pct: Mapped[float | None] = mapped_column(Float)
     ndc: Mapped[int | None] = mapped_column(Integer)
+    operator_count: Mapped[int | None] = mapped_column(Integer)
+    part_count: Mapped[int | None] = mapped_column(Integer)
     acceptance_decision: Mapped[str | None] = mapped_column(String(32))
     report_path: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
@@ -95,7 +97,25 @@ class AuditLog(Base):
     )
 
 
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    type: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text)
+    process_name: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    payload: Mapped[dict | None] = mapped_column("metadata", JSON)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    )
+    resolved_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_by: Mapped[str | None] = mapped_column(String(128))
+
+
 __all__ = [
+    "Alert",
     "AuditLog",
     "Base",
     "GrrStudy",

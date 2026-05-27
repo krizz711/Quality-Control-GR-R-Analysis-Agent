@@ -1,5 +1,15 @@
 import urllib.request
 import json
+from pathlib import Path
+
+
+
+def load_api_key() -> str:
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("API_AUTH_KEY="):
+            return line.split("=", 1)[1].strip()
+    raise RuntimeError("API_AUTH_KEY not found in .env")
 
 url = "http://localhost:8000/studies/grr"
 data = {
@@ -35,7 +45,7 @@ req = urllib.request.Request(
     json.dumps(data).encode('utf-8'),
     {
         'Content-Type': 'application/json',
-        'X-API-Key': 'arad-secret-key',
+        'X-API-Key': load_api_key(),
     },
 )
 try:

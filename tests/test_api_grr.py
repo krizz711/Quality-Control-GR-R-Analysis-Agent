@@ -1,10 +1,12 @@
 import pytest
+import os
+
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 
 from api.main import app
 
-client = TestClient(app, headers={"x-api-key": "arad-secret-key"})
+client = TestClient(app, headers={"x-api-key": os.environ["API_AUTH_KEY"]})
 
 @patch("api.main.mlflow")
 @patch("api.main.AsyncSessionLocal")

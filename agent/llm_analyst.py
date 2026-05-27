@@ -1,5 +1,5 @@
 """
-LLM Analyst — Claude-powered intelligence layer for quality control.
+LLM Analyst — Gemini-powered intelligence layer for quality control.
 
 Responsibilities:
   1. Generate natural-language GR&R study narratives with root-cause suggestions.
@@ -7,7 +7,7 @@ Responsibilities:
   3. Produce executive-ready summaries for quality engineers.
   4. Recommend corrective actions based on statistical findings.
 
-Uses the Anthropic Messages API directly (no SDK dependency on the agent side).
+Uses the Gemini API directly for quality analysis.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # ── Gemini API constants ──────────────────────────────────────────────────────
-_MODEL = "gemini-1.5-flash"
+_MODEL = "gemini-2.5-flash"
 _MAX_TOKENS = 1024
 
 # ── System prompt (manufacturing quality domain expert) ───────────────────────
@@ -108,7 +108,7 @@ async def _call_gemini(
 
 def _parse_json_response(raw: str, fallback_key: str = "content") -> dict[str, Any]:
     """
-    Parse a JSON response from Claude. If JSON is not found,
+    Parse a JSON response from Gemini. If JSON is not found,
     wrap the raw text in a dict under fallback_key.
     """
     # Find the first { ... } block
@@ -147,7 +147,7 @@ async def generate_grr_narrative(
     characteristic_name : str
         The measured characteristic (e.g. "bore_diameter").
     api_key : str
-        Anthropic API key.
+        Gemini API key.
 
     Returns
     -------
@@ -236,7 +236,7 @@ async def interpret_spc_violations(
     recent_values : list[float]
         The last N chart values for context.
     api_key : str
-        Anthropic API key.
+        Gemini API key.
 
     Returns
     -------
@@ -326,7 +326,7 @@ async def generate_predictive_insight(
     recent_grr_pct : float | None
         Most recent GR&R percentage for this equipment, if available.
     api_key : str
-        Anthropic API key.
+        Gemini API key.
 
     Returns
     -------
@@ -346,7 +346,7 @@ async def generate_predictive_insight(
     lcl = control_limits.get("lcl", 0)
     sigma = (ucl - cl) / 3 if ucl > cl else 1.0
 
-    # Compute basic statistics Claude can use
+    # Compute basic statistics Gemini can use
     import statistics
     recent = values_history[-10:]
     mean_recent = statistics.mean(recent)
@@ -420,12 +420,12 @@ async def answer_quality_question(
     conversation_history : list[dict]
         Prior turns: [{"role": "user"|"assistant", "content": "..."}]
     api_key : str
-        Anthropic API key.
+        Gemini API key.
 
     Returns
     -------
     str
-        Conversational answer from Claude.
+        Conversational answer from Gemini.
     """
     context_str = json.dumps(context, indent=2, default=str)
 

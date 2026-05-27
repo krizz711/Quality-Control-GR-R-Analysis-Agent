@@ -335,7 +335,7 @@ DATABASE_URL=postgresql+asyncpg://arad:arad_pass@localhost:5432/arad_quality
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 MLFLOW_TRACKING_URI=http://localhost:5000
 SLACK_WEBHOOK_URL=
-ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
 ```
 
 The `.env` file is ignored by Git, so it stays local and will not be pushed to GitHub.
