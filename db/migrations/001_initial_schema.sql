@@ -102,3 +102,30 @@ CREATE TABLE alerts (
 
 CREATE INDEX ON alerts (status, severity, created_at DESC);
 CREATE INDEX ON alerts (process_name, created_at DESC);
+
+CREATE TABLE alert_feedback (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    alert_id UUID NOT NULL REFERENCES alerts(id),
+    is_relevant BOOLEAN NOT NULL,
+    category VARCHAR(64),
+    notes TEXT,
+    submitted_by VARCHAR(128) DEFAULT 'quality-engineer',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON alert_feedback (alert_id, created_at DESC);
+CREATE INDEX ON alert_feedback (is_relevant, created_at DESC);
+
+CREATE TABLE notification_deliveries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    alert_id UUID REFERENCES alerts(id),
+    channel VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    recipient VARCHAR(256),
+    response_reference VARCHAR(128),
+    error_message TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX ON notification_deliveries (alert_id, created_at DESC);
+CREATE INDEX ON notification_deliveries (channel, status, created_at DESC);

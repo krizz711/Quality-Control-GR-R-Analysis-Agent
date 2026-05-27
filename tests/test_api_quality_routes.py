@@ -257,3 +257,78 @@ def test_alert_lifecycle(mock_session_local: MagicMock) -> None:
     assert resolve.status_code == 200
     assert resolve.json()["alert_id"] == alert_id
     assert session.commit.await_count >= 1
+
+
+@patch("api.quality_routes.AsyncSessionLocal")
+def test_alert_feedback_and_accuracy(mock_session_local: MagicMock) -> None:
+    alert_id = uuid.uuid4()
+    alert_result = _result_with_rows([{"id": alert_id}])
+    accuracy_result = _result_with_rows(
+        [{"feedback_count": 4, "relevant_count": 3, "false_positive_count": 1}]
+    )
+    session = _wire_session(mock_session_local, [alert_result, accuracy_result])
+
+    feedback = client.post(
+        f"/api/alerts/{alert_id}/feedback",
+        json={
+            "is_relevant": False,
+            "category": "false_positive",
+            "notes": "Known maintenance window",
+            "submitted_by": "qe-1",
+        },
+    )
+    assert feedback.status_code == 201
+    assert feedback.json()["alert_id"] == str(alert_id)
+    assert feedback.json()["is_relevant"] is False
+
+    accuracy = client.get("/api/alerts/accuracy")
+    assert accuracy.status_code == 200
+    assert accuracy.json()["feedback_count"] == 4
+    assert accuracy.json()["accuracy_rate"] == 75.0
+    assert accuracy.json()["target_met"] is False
+    assert session.commit.await_count == 1
+
+
+@patch("api.quality_routes.geminiService.analyzeSPCAnomaly", new_callable=AsyncMock, return_value="SPC AI")
+@patch("api.quality_routes.AsyncSessionLocal")
+def test_mes_measurement_integration(mock_session_local: MagicMock, mock_gemini: AsyncMock) -> None:
+    session = _wire_session(mock_session_local)
+
+    response = client.post(
+        "/api/integrations/mes/measurements",
+        json={
+            "event_id": "mes-1",
+            "process_name": "Torque Press Line 1",
+            "measurements": [5.01, 5.0, 4.99, 5.02],
+            "source_system": "mes",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["event_id"] == "mes-1"
+    assert response.json()["accepted"] is True
+    assert response.json()["analysis"]["ai_analysis"] == "SPC AI"
+    assert mock_gemini.await_count == 1
+    assert session.commit.await_count >= 2
+
+
+@patch("api.quality_routes.AsyncSessionLocal")
+def test_qms_equipment_event_without_measurements(mock_session_local: MagicMock) -> None:
+    session = _wire_session(mock_session_local)
+
+    response = client.post(
+        "/api/integrations/qms/inspection-equipment",
+        json={
+            "event_id": "qms-1",
+            "equipment_id": "torque-tool-7",
+            "fixture_id": "fixture-2",
+            "operator_ids": ["A", "B", "C"],
+            "source_system": "qms",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["event_id"] == "qms-1"
+    assert response.json()["accepted"] is True
+    assert response.json()["grr_analysis_started"] is False
+    assert session.commit.await_count == 1

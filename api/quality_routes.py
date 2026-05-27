@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -14,9 +15,11 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
+from agent.alerts import create_jira_ticket, send_slack_alert
 from backend.services import gemini_service as geminiService
+from core.config import settings
 from db.database import AsyncSessionLocal
-from db.models import Alert, AuditLog, GrrStudy, Measurement
+from db.models import Alert, AlertFeedback, AuditLog, GrrStudy, Measurement, NotificationDelivery
 from grr.acceptance import evaluate
 from grr.calculator import grr_anova, grr_xbar_r
 
@@ -164,6 +167,29 @@ class AlertResolveResponse(BaseModel):
     resolved_at: datetime
 
 
+class AlertFeedbackRequest(BaseModel):
+    is_relevant: bool
+    category: Literal["true_positive", "false_positive", "duplicate", "late", "missing_context"] | None = None
+    notes: str = ""
+    submitted_by: str = Field("quality-engineer", min_length=1)
+
+
+class AlertFeedbackResponse(BaseModel):
+    feedback_id: str
+    alert_id: str
+    is_relevant: bool
+    created_at: datetime
+
+
+class AlertAccuracyResponse(BaseModel):
+    feedback_count: int
+    relevant_count: int
+    false_positive_count: int
+    accuracy_rate: float | None
+    target_rate: float = 95.0
+    target_met: bool | None
+
+
 class AuditLogResponse(BaseModel):
     id: str
     timestamp: datetime
@@ -172,6 +198,44 @@ class AuditLogResponse(BaseModel):
     entity_type: str
     entity_id: str
     details: dict[str, Any] | None = None
+
+
+class QMSInspectionEquipmentEvent(BaseModel):
+    equipment_id: str = Field(..., min_length=1)
+    fixture_id: str | None = None
+    characteristic_name: str = Field("inspection_characteristic", min_length=1)
+    operator_ids: list[str] = Field(default_factory=list)
+    measurements: list[GRRMeasurementInput] = Field(default_factory=list)
+    part_tolerance: float | None = None
+    source_system: str = "qms"
+    event_id: str | None = None
+
+
+class QMSInspectionEquipmentResponse(BaseModel):
+    event_id: str
+    accepted: bool
+    grr_analysis_started: bool
+    grr_result: GRRAnalyzeResponse | None = None
+    message: str
+
+
+class MESMeasurementEvent(BaseModel):
+    process_name: str = Field(..., min_length=1)
+    measurements: list[float] = Field(..., min_length=1)
+    part_number: str | None = None
+    characteristic_name: str | None = None
+    target: float | None = None
+    ucl: float | None = None
+    lcl: float | None = None
+    source_system: str = "mes"
+    event_id: str | None = None
+
+
+class MESMeasurementResponse(BaseModel):
+    event_id: str
+    accepted: bool
+    analysis: SPCDataResponse
+    message: str
 
 
 def _now() -> datetime:
@@ -277,12 +341,134 @@ async def _audit(session, actor: str, action: str, entity_type: str, entity_id: 
     )
 
 
+def _stored_alert_lookup_values(alert_id: str) -> tuple[str, str]:
+    try:
+        alert_uuid = uuid.UUID(alert_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid alert ID format") from exc
+    return str(alert_uuid), alert_uuid.hex
+
+
+def _coerce_uuid(value: Any) -> uuid.UUID:
+    if isinstance(value, uuid.UUID):
+        return value
+    text_value = str(value)
+    try:
+        return uuid.UUID(text_value)
+    except ValueError:
+        return uuid.UUID(hex=text_value)
+
+
+async def _dispatch_alert_notifications(
+    session,
+    *,
+    alert_id: uuid.UUID,
+    severity: str,
+    message: str,
+    process_name: str,
+) -> None:
+    slack_status = "skipped"
+    slack_error = None
+    try:
+        slack_sent = await send_slack_alert(settings.slack_webhook_url, message, severity)
+        slack_status = "sent" if slack_sent else "skipped"
+    except Exception as exc:  # defensive: notification failures must not block quality records
+        slack_status = "failed"
+        slack_error = str(exc)
+
+    session.add(
+        NotificationDelivery(
+            alert_id=alert_id,
+            channel="slack",
+            status=slack_status,
+            recipient=settings.slack_webhook_url or None,
+            error_message=slack_error,
+        )
+    )
+
+    if severity == "critical":
+        jira_status = "skipped"
+        jira_error = None
+        jira_key = None
+        try:
+            jira_key = await create_jira_ticket(
+                settings.jira_url,
+                settings.jira_email,
+                settings.jira_api_token,
+                settings.jira_project_key,
+                summary=f"Critical quality alert: {process_name}",
+                description=message,
+            )
+            jira_status = "sent" if jira_key else "skipped"
+        except Exception as exc:  # defensive: notification failures must not block quality records
+            jira_status = "failed"
+            jira_error = str(exc)
+
+        session.add(
+            NotificationDelivery(
+                alert_id=alert_id,
+                channel="jira",
+                status=jira_status,
+                recipient=settings.jira_project_key,
+                response_reference=jira_key,
+                error_message=jira_error,
+            )
+        )
+
+
+async def _create_quality_alert(
+    session,
+    *,
+    alert_type: Literal["grr_fail", "spc_violation", "trend_detected"],
+    severity: Literal["low", "medium", "high", "critical"],
+    message: str,
+    process_name: str,
+    payload: dict[str, Any],
+    timestamp: datetime,
+) -> uuid.UUID:
+    alert_id = uuid.uuid4()
+    session.add(
+        Alert(
+            id=alert_id,
+            type=alert_type,
+            severity=severity,
+            message=message,
+            process_name=process_name,
+            status="active",
+            payload=payload,
+            created_at=timestamp,
+        )
+    )
+    await _audit(
+        session,
+        actor="system",
+        action="alert_triggered",
+        entity_type="alert",
+        entity_id=str(alert_id),
+        details={
+            "type": alert_type,
+            "severity": severity,
+            "process_name": process_name,
+            **payload,
+        },
+    )
+    await _dispatch_alert_notifications(
+        session,
+        alert_id=alert_id,
+        severity=severity,
+        message=message,
+        process_name=process_name,
+    )
+    return alert_id
+
+
 @router.post(
     "/grr/analyze",
     response_model=GRRAnalyzeResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def analyze_grr(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
+    started = time.monotonic()
     try:
         df = pd.DataFrame([item.model_dump() for item in body.measurements])
         df = df.rename(columns={"value": "measurement"})
@@ -330,37 +516,21 @@ async def analyze_grr(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
                 )
             )
             if result.total_grr > 30.0:
-                alert_id = uuid.uuid4()
-                session.add(
-                    Alert(
-                        id=alert_id,
-                        type="grr_fail",
-                        severity="high",
-                        message=f"GR&R study failed with {result.total_grr:.1f}% variation. Review the torque measurement system.",
-                        process_name="GR&R Analysis",
-                        status="active",
-                        payload={
-                            "source": "api_grr_analyze",
-                            "study_id": str(study_id),
-                            "grr_percent": result.total_grr,
-                            "threshold": 30.0,
-                        },
-                        created_at=timestamp,
-                    )
-                )
-                await _audit(
+                await _create_quality_alert(
                     session,
-                    actor="system",
-                    action="alert_triggered",
-                    entity_type="alert",
-                    entity_id=str(alert_id),
-                    details={
-                        "type": "grr_fail",
-                        "severity": "high",
-                        "process_name": "GR&R Analysis",
+                    alert_type="grr_fail",
+                    severity="high",
+                    message=(
+                        f"GR&R study failed with {result.total_grr:.1f}% variation. "
+                        "Review the torque measurement system."
+                    ),
+                    process_name="GR&R Analysis",
+                    payload={
+                        "source": "api_grr_analyze",
                         "study_id": str(study_id),
                         "grr_percent": result.total_grr,
                     },
+                    timestamp=timestamp,
                 )
             await _audit(
                 session,
@@ -374,6 +544,9 @@ async def analyze_grr(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
                     "operator_count": len(operators),
                     "part_count": len(parts),
                     "verdict": verdict.level.value,
+                    "duration_seconds": round(time.monotonic() - started, 4),
+                    "slo_target_seconds": 7200,
+                    "slo_met": (time.monotonic() - started) < 7200,
                 },
             )
             await session.commit()
@@ -427,6 +600,7 @@ async def get_grr_history() -> list[GRRHistoryItem]:
 
 @router.post("/spc/data", response_model=SPCDataResponse, status_code=status.HTTP_201_CREATED)
 async def analyze_spc_data(body: SPCDataRequest) -> SPCDataResponse:
+    started = time.monotonic()
     try:
         values = [float(value) for value in body.measurements]
         mean_value = float(np.mean(values))
@@ -478,40 +652,23 @@ async def analyze_spc_data(body: SPCDataRequest) -> SPCDataResponse:
             if violations:
                 worst = next((violation for violation in violations if violation.rule == "rule_1"), violations[0])
                 severity = "critical" if worst.rule == "rule_1" else "high"
-                alert_id = uuid.uuid4()
-                session.add(
-                    Alert(
-                        id=alert_id,
-                        type="spc_violation",
-                        severity=severity,
-                        message=(
-                            f"{body.process_name} violated {worst.rule}: "
-                            f"{worst.description} at measurement {worst.index + 1} ({worst.value:.4f})."
-                        ),
-                        process_name=body.process_name,
-                        status="active",
-                        payload={
-                            "source": "api_spc_data",
-                            "violations": [violation.model_dump() for violation in violations],
-                            "ucl": ucl,
-                            "lcl": lcl,
-                            "target": body.target,
-                        },
-                        created_at=timestamp,
-                    )
-                )
-                await _audit(
+                await _create_quality_alert(
                     session,
-                    actor="system",
-                    action="alert_triggered",
-                    entity_type="alert",
-                    entity_id=str(alert_id),
-                    details={
-                        "type": "spc_violation",
-                        "severity": severity,
-                        "process_name": body.process_name,
+                    alert_type="spc_violation",
+                    severity=severity,
+                    message=(
+                        f"{body.process_name} violated {worst.rule}: "
+                        f"{worst.description} at measurement {worst.index + 1} ({worst.value:.4f})."
+                    ),
+                    process_name=body.process_name,
+                    payload={
+                        "source": "api_spc_data",
                         "violations": [violation.model_dump() for violation in violations],
+                        "ucl": ucl,
+                        "lcl": lcl,
+                        "target": body.target,
                     },
+                    timestamp=timestamp,
                 )
 
             await _audit(
@@ -526,6 +683,7 @@ async def analyze_spc_data(body: SPCDataRequest) -> SPCDataResponse:
                     "ucl": ucl,
                     "lcl": lcl,
                     "violations": [violation.model_dump() for violation in violations],
+                    "duration_seconds": round(time.monotonic() - started, 4),
                 },
             )
             await session.commit()
@@ -574,6 +732,91 @@ async def get_spc_history(process_name: str) -> SPCHistoryResponse:
     return SPCHistoryResponse(process_name=process_name, points=points)
 
 
+@router.post("/integrations/qms/inspection-equipment", response_model=QMSInspectionEquipmentResponse)
+async def receive_qms_inspection_equipment_event(
+    body: QMSInspectionEquipmentEvent,
+) -> QMSInspectionEquipmentResponse:
+    event_id = body.event_id or str(uuid.uuid4())
+    timestamp = _now()
+
+    async with AsyncSessionLocal() as session:
+        await _audit(
+            session,
+            actor=body.source_system,
+            action="qms_equipment_event_received",
+            entity_type="inspection_equipment",
+            entity_id=body.equipment_id,
+            details={
+                "event_id": event_id,
+                "fixture_id": body.fixture_id,
+                "characteristic_name": body.characteristic_name,
+                "operator_count": len(body.operator_ids),
+                "measurement_count": len(body.measurements),
+                "received_at": timestamp.isoformat(),
+            },
+        )
+        await session.commit()
+
+    if not body.measurements:
+        return QMSInspectionEquipmentResponse(
+            event_id=event_id,
+            accepted=True,
+            grr_analysis_started=False,
+            message="Equipment event accepted. Awaiting GR&R measurements.",
+        )
+
+    grr_result = await analyze_grr(
+        GRRAnalyzeRequest(measurements=body.measurements, part_tolerance=body.part_tolerance)
+    )
+    return QMSInspectionEquipmentResponse(
+        event_id=event_id,
+        accepted=True,
+        grr_analysis_started=True,
+        grr_result=grr_result,
+        message="Equipment event accepted and GR&R analysis completed.",
+    )
+
+
+@router.post("/integrations/mes/measurements", response_model=MESMeasurementResponse)
+async def receive_mes_measurement_event(body: MESMeasurementEvent) -> MESMeasurementResponse:
+    event_id = body.event_id or str(uuid.uuid4())
+    timestamp = _now()
+
+    async with AsyncSessionLocal() as session:
+        await _audit(
+            session,
+            actor=body.source_system,
+            action="mes_measurement_event_received",
+            entity_type="spc_process",
+            entity_id=body.process_name,
+            details={
+                "event_id": event_id,
+                "process_name": body.process_name,
+                "part_number": body.part_number,
+                "characteristic_name": body.characteristic_name,
+                "measurement_count": len(body.measurements),
+                "received_at": timestamp.isoformat(),
+            },
+        )
+        await session.commit()
+
+    analysis = await analyze_spc_data(
+        SPCDataRequest(
+            process_name=body.process_name,
+            measurements=body.measurements,
+            target=body.target,
+            ucl=body.ucl,
+            lcl=body.lcl,
+        )
+    )
+    return MESMeasurementResponse(
+        event_id=event_id,
+        accepted=True,
+        analysis=analysis,
+        message="MES measurements accepted and SPC analysis completed.",
+    )
+
+
 @router.get("/dashboard/summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary() -> DashboardSummaryResponse:
     async with AsyncSessionLocal() as session:
@@ -616,28 +859,15 @@ async def get_dashboard_summary() -> DashboardSummaryResponse:
 @router.post("/alerts/trigger", response_model=AlertTriggerResponse, status_code=status.HTTP_201_CREATED)
 async def trigger_alert(body: AlertTriggerRequest) -> AlertTriggerResponse:
     timestamp = _now()
-    alert_id = uuid.uuid4()
-
     async with AsyncSessionLocal() as session:
-        session.add(
-            Alert(
-                id=alert_id,
-                type=body.type,
-                severity=body.severity,
-                message=body.message,
-                process_name=body.process_name,
-                status="active",
-                payload={"source": "api", "triggered_by": "api"},
-                created_at=timestamp,
-            )
-        )
-        await _audit(
+        alert_id = await _create_quality_alert(
             session,
-            actor="system",
-            action="alert_triggered",
-            entity_type="alert",
-            entity_id=str(alert_id),
-            details=body.model_dump(),
+            alert_type=body.type,
+            severity=body.severity,
+            message=body.message,
+            process_name=body.process_name,
+            payload={"source": "api", "triggered_by": "api"},
+            timestamp=timestamp,
         )
         await session.commit()
 
@@ -697,16 +927,13 @@ async def list_alerts(
 
 @router.put("/alerts/{alert_id}/resolve", response_model=AlertResolveResponse)
 async def resolve_alert(alert_id: str) -> AlertResolveResponse:
-    try:
-        alert_uuid = uuid.UUID(alert_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid alert ID format") from exc
+    uuid_id, hex_id = _stored_alert_lookup_values(alert_id)
 
     resolved_at = _now()
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("SELECT * FROM alerts WHERE id IN (:uuid_id, :hex_id)"),
-            {"uuid_id": str(alert_uuid), "hex_id": alert_uuid.hex},
+            {"uuid_id": uuid_id, "hex_id": hex_id},
         )
         row = result.mappings().first()
         if not row:
@@ -735,6 +962,85 @@ async def resolve_alert(alert_id: str) -> AlertResolveResponse:
         await session.commit()
 
     return AlertResolveResponse(alert_id=alert_id, resolved_at=resolved_at)
+
+
+@router.post("/alerts/{alert_id}/feedback", response_model=AlertFeedbackResponse, status_code=status.HTTP_201_CREATED)
+async def record_alert_feedback(alert_id: str, body: AlertFeedbackRequest) -> AlertFeedbackResponse:
+    uuid_id, hex_id = _stored_alert_lookup_values(alert_id)
+    created_at = _now()
+    feedback_id = uuid.uuid4()
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT id FROM alerts WHERE id IN (:uuid_id, :hex_id)"),
+            {"uuid_id": uuid_id, "hex_id": hex_id},
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+        stored_alert_id = row["id"]
+        session.add(
+            AlertFeedback(
+                id=feedback_id,
+                alert_id=_coerce_uuid(stored_alert_id),
+                is_relevant=body.is_relevant,
+                category=body.category,
+                notes=body.notes,
+                submitted_by=body.submitted_by,
+                created_at=created_at,
+            )
+        )
+        await _audit(
+            session,
+            actor=body.submitted_by,
+            action="alert_feedback_recorded",
+            entity_type="alert",
+            entity_id=str(stored_alert_id),
+            details={
+                "is_relevant": body.is_relevant,
+                "category": body.category,
+                "notes": body.notes,
+            },
+        )
+        await session.commit()
+
+    return AlertFeedbackResponse(
+        feedback_id=str(feedback_id),
+        alert_id=alert_id,
+        is_relevant=body.is_relevant,
+        created_at=created_at,
+    )
+
+
+@router.get("/alerts/accuracy", response_model=AlertAccuracyResponse)
+async def get_alert_accuracy() -> AlertAccuracyResponse:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT
+                    COUNT(*) AS feedback_count,
+                    SUM(CASE WHEN is_relevant THEN 1 ELSE 0 END) AS relevant_count,
+                    SUM(CASE WHEN is_relevant THEN 0 ELSE 1 END) AS false_positive_count
+                FROM alert_feedback
+                """
+            )
+        )
+        row = result.mappings().first() or {}
+
+    feedback_count = int(row.get("feedback_count") or 0)
+    relevant_count = int(row.get("relevant_count") or 0)
+    false_positive_count = int(row.get("false_positive_count") or 0)
+    accuracy_rate = (relevant_count / feedback_count) * 100.0 if feedback_count else None
+
+    return AlertAccuracyResponse(
+        feedback_count=feedback_count,
+        relevant_count=relevant_count,
+        false_positive_count=false_positive_count,
+        accuracy_rate=accuracy_rate,
+        target_met=accuracy_rate >= 95.0 if accuracy_rate is not None else None,
+    )
 
 
 @router.get("/audit-log", response_model=list[AuditLogResponse])

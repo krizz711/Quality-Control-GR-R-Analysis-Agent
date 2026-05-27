@@ -113,6 +113,29 @@ export interface AlertResolveResponse {
   resolved_at: string;
 }
 
+export interface AlertFeedbackInput {
+  is_relevant: boolean;
+  category?: "true_positive" | "false_positive" | "duplicate" | "late" | "missing_context";
+  notes?: string;
+  submitted_by?: string;
+}
+
+export interface AlertFeedbackResponse {
+  feedback_id: string;
+  alert_id: string;
+  is_relevant: boolean;
+  created_at: string;
+}
+
+export interface AlertAccuracyResponse {
+  feedback_count: number;
+  relevant_count: number;
+  false_positive_count: number;
+  accuracy_rate: number | null;
+  target_rate: number;
+  target_met: boolean | null;
+}
+
 export interface AuditLogItem {
   id: string;
   timestamp: string;
@@ -280,6 +303,12 @@ export const getAlerts = (params?: AlertFilters) =>
 
 export const resolveAlert = (id: string | number) =>
   apiClient.put<AlertResolveResponse>(`/api/alerts/${id}/resolve`);
+
+export const recordAlertFeedback = (id: string | number, data: AlertFeedbackInput) =>
+  apiClient.post<AlertFeedbackResponse>(`/api/alerts/${id}/feedback`, data);
+
+export const getAlertAccuracy = () =>
+  apiClient.get<AlertAccuracyResponse>("/api/alerts/accuracy");
 
 // Audit Log
 export const getAuditLog = () => apiClient.get<AuditLogItem[]>("/api/audit-log");

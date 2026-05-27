@@ -114,12 +114,43 @@ class Alert(Base):
     resolved_by: Mapped[str | None] = mapped_column(String(128))
 
 
+class AlertFeedback(Base):
+    __tablename__ = "alert_feedback"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID] = mapped_column(UUID, ForeignKey("alerts.id"))
+    is_relevant: Mapped[bool] = mapped_column(Boolean)
+    category: Mapped[str | None] = mapped_column(String(64))
+    notes: Mapped[str | None] = mapped_column(Text)
+    submitted_by: Mapped[str] = mapped_column(String(128), default="quality-engineer")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    )
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID | None] = mapped_column(UUID, ForeignKey("alerts.id"))
+    channel: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    recipient: Mapped[str | None] = mapped_column(String(256))
+    response_reference: Mapped[str | None] = mapped_column(String(128))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    )
+
+
 __all__ = [
     "Alert",
+    "AlertFeedback",
     "AuditLog",
     "Base",
     "GrrStudy",
     "Measurement",
+    "NotificationDelivery",
     "QualityViolation",
     "ReviewQueue",
 ]

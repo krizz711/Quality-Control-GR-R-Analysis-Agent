@@ -15,7 +15,7 @@ import {
   Info,
   Loader2
 } from "lucide-react";
-import { getAlerts, resolveAlert, showToast, type AlertItem } from "@/api/apiClient";
+import { getAlerts, recordAlertFeedback, resolveAlert, showToast, type AlertItem } from "@/api/apiClient";
 
 function formatTimeAgo(dateString: string) {
   const date = new Date(dateString);
@@ -122,6 +122,19 @@ export default function AlertsPage() {
       if (selectedAlert?.id === id) {
         setSelectedAlert(prev => prev ? { ...prev, status: "resolved", resolved_at: new Date().toISOString() } : null);
       }
+    } catch (e) {
+      // toast shown by interceptor
+    }
+  };
+
+  const handleFeedback = async (alert: AlertItem, isRelevant: boolean) => {
+    try {
+      await recordAlertFeedback(alert.id, {
+        is_relevant: isRelevant,
+        category: isRelevant ? "true_positive" : "false_positive",
+        submitted_by: "quality-engineer",
+      });
+      showToast(isRelevant ? "Alert marked relevant." : "Alert marked false positive.");
     } catch (e) {
       // toast shown by interceptor
     }
@@ -293,6 +306,18 @@ export default function AlertsPage() {
                   >
                     <Info size={14} /> View Details
                   </button>
+                  <button
+                    onClick={() => void handleFeedback(alert, true)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
+                  >
+                    Relevant
+                  </button>
+                  <button
+                    onClick={() => void handleFeedback(alert, false)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                  >
+                    False Positive
+                  </button>
                 </div>
               </div>
             ))
@@ -382,6 +407,18 @@ export default function AlertsPage() {
                   <CheckCircle2 size={16} /> Resolve Alert
                 </button>
               )}
+              <button
+                onClick={() => void handleFeedback(selectedAlert, true)}
+                className="inline-flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20"
+              >
+                Relevant
+              </button>
+              <button
+                onClick={() => void handleFeedback(selectedAlert, false)}
+                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20"
+              >
+                False Positive
+              </button>
             </div>
           </div>
         </div>
