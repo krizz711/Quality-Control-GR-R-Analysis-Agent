@@ -71,6 +71,11 @@ export interface SPCHistoryItem {
   characteristic_name?: string | null;
 }
 
+export interface SPCHistoryResponse {
+  process_name: string;
+  points: SPCHistoryItem[];
+}
+
 export interface DashboardSummaryResponse {
   total_grr_analyses: number;
   passing_rate: number;
@@ -263,7 +268,7 @@ export const submitSPCData = (data: SPCInput) =>
   apiClient.post<SPCDataResponse>("/api/spc/data", data);
 
 export const getSPCHistory = (processName: string) =>
-  apiClient.get<SPCHistoryItem[]>(`/api/spc/history/${encodeURIComponent(processName)}`);
+  apiClient.get<SPCHistoryResponse>(`/api/spc/history/${encodeURIComponent(processName)}`);
 
 // Dashboard
 export const getDashboardSummary = () =>

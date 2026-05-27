@@ -1,383 +1,381 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useMemo, useState } from "react";
+import { Activity, AlertTriangle, CheckCircle2, Loader2, Plus, RotateCcw, Send } from "lucide-react";
 import {
-  AlertTriangle,
-  CheckCircle2,
-  Maximize2,
-  RefreshCw,
-} from "lucide-react";
-import {
-  LineChart,
+  CartesianGrid,
   Line,
+  LineChart,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-  ReferenceArea,
 } from "recharts";
-import { type SPCChart } from "@/lib/mock-data";
-import { analyzeSPC, transformSPCResponseToUI } from "@/lib/hooks";
+import {
+  getSPCHistory,
+  showToast,
+  submitSPCData,
+  type SPCDataResponse,
+  type SPCViolation,
+} from "@/api/apiClient";
 
-const container = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.06 } },
-};
-const item = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" as const } },
+type ChartPoint = {
+  index: number;
+  value: number;
+  violation?: SPCViolation;
 };
 
-const SPCTooltip = ({ active, payload }: { active?: boolean; payload?: Array<{ payload: { value: number; violation?: string; index: number } }> }) => {
+const STORAGE_KEY = "arad-spc-active-process";
+const inputClass =
+  "w-full rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-500/20";
+
+function formatNumber(value: number | null | undefined) {
+  return Number.isFinite(value) ? Number(value).toFixed(4) : "--";
+}
+
+function buildChartPoints(values: number[], violations: SPCViolation[]) {
+  return values.map((value, index) => ({
+    index,
+    value,
+    violation: violations.find((violation) => violation.index === index),
+  }));
+}
+
+function SPCTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: ChartPoint }>;
+}) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const point = payload[0].payload;
+
   return (
-    <div
-      className="px-3 py-2.5 rounded-lg text-[11px]"
-      style={{
-        background: "var(--bg-elevated)",
-        border: `1px solid ${d.violation ? "rgba(248,113,113,0.3)" : "var(--border-default)"}`,
-        boxShadow: "var(--shadow-lg)",
-      }}
-    >
-      <div className="font-mono font-bold" style={{ color: "var(--text-primary)" }}>
-        {d.value.toFixed(4)}
-      </div>
-      <div style={{ color: "var(--text-muted)" }}>Subgroup {d.index + 1}</div>
-      {d.violation && (
-        <div className="flex items-center gap-1 mt-1" style={{ color: "var(--critical)" }}>
-          <AlertTriangle size={10} />
-          <span className="font-semibold">Out of Control</span>
-        </div>
-      )}
+    <div className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 shadow-xl">
+      <div className="font-mono text-sm font-semibold">{point.value.toFixed(4)}</div>
+      <div className="mt-1 text-slate-500">Measurement {point.index + 1}</div>
+      {point.violation ? (
+        <div className="mt-2 max-w-56 text-rose-300">{point.violation.description}</div>
+      ) : null}
     </div>
-  );
-};
-
-function ControlChartCard({ chart, expanded, onExpand }: { chart: SPCChart; expanded: boolean; onExpand: () => void }) {
-  const sigma = (chart.ucl - chart.cl) / 3;
-  const zone2Upper = chart.cl + 2 * sigma;
-  const zone2Lower = chart.cl - 2 * sigma;
-  const zone1Upper = chart.cl + sigma;
-  const zone1Lower = chart.cl - sigma;
-
-  const statusColor = chart.status === "critical" ? "var(--critical)" : chart.status === "warning" ? "var(--warning)" : "var(--success)";
-
-  return (
-    <motion.div
-      layout
-      variants={item}
-      className={`surface-card overflow-hidden ${expanded ? "lg:col-span-2" : ""}`}
-    >
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3.5 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-        <div className="flex items-center gap-3">
-          <div
-            className="w-2.5 h-2.5 rounded-full"
-            style={{
-              background: statusColor,
-              boxShadow: chart.status !== "stable" ? `0 0 8px ${statusColor}66` : "none",
-            }}
-          />
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-                {chart.machine_id}
-              </span>
-              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                {chart.chart_type.toUpperCase().replace("_", "-")}
-              </span>
-            </div>
-            <div className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
-              {chart.characteristic} · {chart.part_number}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {chart.active_violations.length > 0 && (
-            <span className={`badge ${chart.status === "critical" ? "badge-critical" : "badge-warning"}`}>
-              <AlertTriangle size={9} />
-              {chart.active_violations.map((v) => v.rule).join(", ")}
-            </span>
-          )}
-          {chart.status === "stable" && (
-            <span className="badge badge-success">
-              <CheckCircle2 size={9} /> In Control
-            </span>
-          )}
-          <button
-            onClick={onExpand}
-            className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
-            style={{ color: "var(--text-ghost)", background: "var(--bg-hover)" }}
-          >
-            <Maximize2 size={12} />
-          </button>
-        </div>
-      </div>
-
-      {/* Chart */}
-      <div className="px-4 pt-4 pb-2">
-        <ResponsiveContainer width="100%" height={expanded ? 320 : 220}>
-          <LineChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
-
-            {/* Zone shading */}
-            <ReferenceArea y1={zone1Upper} y2={zone1Lower} fill="rgba(99,145,255,0.02)" />
-            <ReferenceArea y1={zone2Upper} y2={zone1Upper} fill="rgba(251,191,36,0.02)" />
-            <ReferenceArea y1={zone1Lower} y2={zone2Lower} fill="rgba(251,191,36,0.02)" />
-
-            {/* Control limits */}
-            <ReferenceLine y={chart.ucl} stroke="var(--critical)" strokeDasharray="8 4" strokeWidth={1} opacity={0.6} label={{ value: "UCL", position: "right", fill: "var(--critical)", fontSize: 9 }} />
-            <ReferenceLine y={chart.cl} stroke="var(--accent)" strokeDasharray="4 4" strokeWidth={1} opacity={0.5} label={{ value: "CL", position: "right", fill: "var(--accent)", fontSize: 9 }} />
-            <ReferenceLine y={chart.lcl} stroke="var(--critical)" strokeDasharray="8 4" strokeWidth={1} opacity={0.6} label={{ value: "LCL", position: "right", fill: "var(--critical)", fontSize: 9 }} />
-
-            <XAxis
-              dataKey="index"
-              tick={{ fill: "var(--text-ghost)", fontSize: 9 }}
-              axisLine={false}
-              tickLine={false}
-              tickFormatter={(v) => String(v + 1)}
-            />
-            <YAxis
-              tick={{ fill: "var(--text-muted)", fontSize: 10 }}
-              axisLine={false}
-              tickLine={false}
-              domain={["auto", "auto"]}
-              width={55}
-              tickFormatter={(v) => v.toFixed(3)}
-            />
-            <Tooltip content={<SPCTooltip />} />
-            <Line
-              type="monotone"
-              dataKey="value"
-              stroke="var(--accent)"
-              strokeWidth={1.5}
-              dot={(props) => {
-                if (typeof props.cx !== "number" || typeof props.cy !== "number") return null;
-                const isViolation = props.payload.violation;
-                if (isViolation) {
-                  return (
-                    <g key={props.index}>
-                      <circle cx={props.cx} cy={props.cy} r={6} fill="var(--critical)" fillOpacity={0.2} stroke="none" />
-                      <circle cx={props.cx} cy={props.cy} r={3.5} fill="var(--critical)" stroke="var(--bg-surface)" strokeWidth={1.5} />
-                    </g>
-                  );
-                }
-                return (
-                  <circle
-                    key={props.index}
-                    cx={props.cx}
-                    cy={props.cy}
-                    r={2}
-                    fill="var(--accent)"
-                    stroke="var(--bg-surface)"
-                    strokeWidth={1}
-                  />
-                );
-              }}
-              activeDot={{ r: 4, fill: "var(--accent-bright)", stroke: "var(--bg-surface)", strokeWidth: 2 }}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Control limit values */}
-      <div className="flex items-center gap-4 px-5 py-3 border-t" style={{ borderColor: "var(--border-subtle)" }}>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-[1px]" style={{ background: "var(--critical)", opacity: 0.6 }} />
-          <span className="text-[10px] font-mono" style={{ color: "var(--text-ghost)" }}>
-            UCL: {chart.ucl.toFixed(4)}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-[1px]" style={{ background: "var(--accent)", opacity: 0.5 }} />
-          <span className="text-[10px] font-mono" style={{ color: "var(--text-ghost)" }}>
-            CL: {chart.cl.toFixed(4)}
-          </span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="w-3 h-[1px]" style={{ background: "var(--critical)", opacity: 0.6 }} />
-          <span className="text-[10px] font-mono" style={{ color: "var(--text-ghost)" }}>
-            LCL: {chart.lcl.toFixed(4)}
-          </span>
-        </div>
-        <div className="ml-auto flex items-center gap-1">
-          <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
-            {chart.data.length} subgroups
-          </span>
-        </div>
-      </div>
-    </motion.div>
   );
 }
 
 export default function SPCPage() {
-  const [expandedChart, setExpandedChart] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "violations">("all");
-  const [charts, setCharts] = useState<SPCChart[]>([]);
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [processDraft, setProcessDraft] = useState("Torque Press Line 1");
+  const [processName, setProcessName] = useState("");
+  const [measurementDraft, setMeasurementDraft] = useState("");
+  const [measurements, setMeasurements] = useState<number[]>([]);
+  const [analysis, setAnalysis] = useState<SPCDataResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
-  // Simulate real-time data fetching
   useEffect(() => {
-    // Initial data stream values
-    const dataStreams = [
-      { id: "CMM-001", part: "P-2847", char: "Bore Diameter", cl: 25.02, sigma: 0.004, values: Array.from({length: 40}, () => 25.02 + (Math.random() - 0.5) * 0.004 * 2) },
-      { id: "CNC-L4-001", part: "P-3921", char: "Thread Pitch", cl: 1.25, sigma: 0.001, values: Array.from({length: 40}, () => 1.25 + (Math.random() - 0.5) * 0.001 * 2) },
-    ];
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      setProcessName(stored);
+      setProcessDraft(stored);
+    }
+  }, []);
 
-    let mounted = true;
+  useEffect(() => {
+    if (!processName) return;
 
-    const fetchUpdates = async () => {
+    let active = true;
+    const loadHistory = async () => {
+      setHistoryLoading(true);
       try {
-        const updatedCharts = await Promise.all(
-          dataStreams.map(async (stream) => {
-            // Add a new point, dropping the oldest
-            stream.values.shift();
-            // Occasionally introduce an anomaly for CMM-001 to show violations
-            let newValue = stream.cl + (Math.random() - 0.5) * stream.sigma * 2;
-            if (stream.id === "CMM-001" && Math.random() > 0.95) {
-                newValue = stream.cl + 3.5 * stream.sigma; // Out of control!
-            }
-            stream.values.push(newValue);
+        const history = await getSPCHistory(processName);
+        if (!active) return;
 
-            const response = await analyzeSPC(stream.values, 'xbar_r');
-            return transformSPCResponseToUI(response, stream.id, stream.part, stream.char);
-          })
-        );
-        
-        if (mounted) {
-          setCharts(updatedCharts as SPCChart[]);
+        const values = [...history.points]
+          .reverse()
+          .map((point) => Number(point.value))
+          .filter(Number.isFinite)
+          .slice(-50);
+
+        setMeasurements(values);
+        if (values.length >= 2) {
+          const result = await submitSPCData({ process_name: processName, measurements: values });
+          if (active) setAnalysis(result);
+        } else if (active) {
+          setAnalysis(null);
         }
       } catch (error) {
-        console.error("Error fetching SPC updates:", error);
+        if (active) showToast("SPC history could not be loaded.");
+      } finally {
+        if (active) setHistoryLoading(false);
       }
     };
 
-    fetchUpdates();
-    const interval = setInterval(fetchUpdates, 3000); // Poll every 3 seconds
-
+    void loadHistory();
     return () => {
-      mounted = false;
-      clearInterval(interval);
+      active = false;
     };
-  }, [refreshTick]);
+  }, [processName]);
 
-  const filtered = filter === "violations" ? charts.filter((c) => c.active_violations.length > 0) : charts;
+  const chartPoints = useMemo(
+    () => buildChartPoints(measurements, analysis?.violations ?? []),
+    [measurements, analysis?.violations],
+  );
+
+  const sigma = analysis ? (analysis.ucl - analysis.lcl) / 6 : 0;
+  const centerLine = analysis ? (analysis.ucl + analysis.lcl) / 2 : 0;
+  const zoneOneUpper = centerLine + sigma;
+  const zoneOneLower = centerLine - sigma;
+  const zoneTwoUpper = centerLine + 2 * sigma;
+  const zoneTwoLower = centerLine - 2 * sigma;
+  const activeViolations = analysis?.violations ?? [];
+
+  const registerProcess = () => {
+    const name = processDraft.trim();
+    if (!name) {
+      showToast("Enter a process name.");
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEY, name);
+    setProcessName(name);
+    setMeasurements([]);
+    setAnalysis(null);
+    showToast(`${name} added to SPC monitor.`);
+  };
+
+  const submitMeasurement = async () => {
+    if (!processName) {
+      showToast("Add a process before submitting measurements.");
+      return;
+    }
+
+    const value = Number(measurementDraft);
+    if (!Number.isFinite(value)) {
+      showToast("Enter a valid numeric measurement.");
+      return;
+    }
+
+    const nextMeasurements = [...measurements, value].slice(-50);
+    setMeasurements(nextMeasurements);
+    setMeasurementDraft("");
+
+    if (nextMeasurements.length < 2) {
+      showToast("Add one more point to calculate limits.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await submitSPCData({
+        process_name: processName,
+        measurements: nextMeasurements,
+      });
+      setAnalysis(result);
+      if (result.violations.length) {
+        showToast(`${result.violations.length} SPC violation${result.violations.length === 1 ? "" : "s"} detected.`);
+      }
+    } catch (error) {
+      showToast("SPC analysis failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadSampleSet = async () => {
+    const sample = [
+      5.01, 4.99, 5.02, 5.0, 5.03, 4.98, 5.01, 5.02, 4.99, 5.0, 5.01, 5.03, 4.98, 5.02, 5.0,
+    ];
+    setMeasurements(sample);
+    if (!processName) {
+      showToast("Add a process before loading sample data.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      setAnalysis(await submitSPCData({ process_name: processName, measurements: sample }));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <motion.div
-      variants={container}
-      initial="hidden"
-      animate="show"
-      className="h-full overflow-y-auto p-6 space-y-5"
-      style={{ background: "var(--bg-root)" }}
-    >
-      {/* Header */}
-      <motion.div variants={item} className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
-            SPC Control Monitor
-          </h1>
-          <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-            Real-time Statistical Process Control · Nelson Rule Detection
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Status summary */}
-          <div className="hidden md:flex items-center gap-3 mr-4">
-            {["critical", "warning", "stable"].map((status) => {
-              const count = charts.filter((c) => c.status === status).length;
-              return (
-                <div key={status} className="flex items-center gap-1.5">
-                  <span
-                    className="w-2 h-2 rounded-full"
-                    style={{
-                      background: status === "critical" ? "var(--critical)" : status === "warning" ? "var(--warning)" : "var(--success)",
-                    }}
-                  />
-                  <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
-                    {count} {status}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Filter */}
-          <div
-            className="flex items-center rounded-lg overflow-hidden"
-            style={{ border: "1px solid var(--border-default)" }}
-          >
-            {(["all", "violations"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className="px-3 py-1.5 text-[11px] font-medium transition-colors"
-                style={{
-                  background: filter === f ? "var(--accent-bg)" : "var(--bg-surface)",
-                  color: filter === f ? "var(--accent)" : "var(--text-muted)",
-                }}
-              >
-                {f === "all" ? "All Charts" : "Violations Only"}
-              </button>
-            ))}
-          </div>
-
-          <button
-            onClick={() => setRefreshTick((value) => value + 1)}
-            className="flex items-center justify-center w-9 h-9 rounded-lg"
-            style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-default)", color: "var(--text-muted)" }}
-          >
-            <RefreshCw size={14} />
-          </button>
-        </div>
-      </motion.div>
-
-      {/* Anomaly feed strip */}
-      {charts.some((c) => c.active_violations.length > 0) && (
-        <motion.div variants={item}>
-          <div
-            className="flex items-center gap-4 px-5 py-3 rounded-xl overflow-x-auto"
-            style={{ background: "var(--critical-bg)", border: "1px solid rgba(248,113,113,0.12)" }}
-          >
-            <div className="flex items-center gap-2 shrink-0">
-              <AlertTriangle size={14} style={{ color: "var(--critical)" }} />
-              <span className="text-[12px] font-semibold" style={{ color: "var(--critical)" }}>
-                Active Violations
-              </span>
+    <div className="h-full overflow-y-auto bg-slate-950 px-4 py-6 text-slate-100 md:px-6">
+      <div className="mx-auto flex max-w-7xl flex-col gap-6">
+        <header className="rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-5 shadow-lg">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="mt-1 flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-500/20 bg-cyan-500/10 text-cyan-300">
+                <Activity size={20} />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">SPC Control Monitor</h1>
+                <p className="mt-1 text-sm text-slate-400">Manual process monitoring with live control limits and violation detection.</p>
+              </div>
             </div>
-            <div className="h-4 w-px" style={{ background: "rgba(248,113,113,0.2)" }} />
-            {charts
-              .filter((c) => c.active_violations.length > 0)
-              .map((c) => (
-                <div key={c.id} className="flex items-center gap-2 shrink-0">
-                  <span className="text-[11px] font-medium" style={{ color: "var(--text-primary)" }}>
-                    {c.machine_id}
-                  </span>
-                  <span className="text-[10px]" style={{ color: "var(--critical)" }}>
-                    {c.active_violations.map((v) => v.rule).join(", ")}
-                  </span>
-                  <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>•</span>
-                </div>
-              ))}
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
+              <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Process</div>
+              <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-emerald-300">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(34,197,94,0.12)]" />
+                {processName || "No process added"}
+              </div>
+            </div>
           </div>
-        </motion.div>
-      )}
+        </header>
 
-      {/* Chart grid */}
-      <motion.div variants={container} className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {filtered.map((chart) => (
-          <ControlChartCard
-            key={chart.id}
-            chart={chart}
-            expanded={expandedChart === chart.id}
-            onExpand={() => setExpandedChart(expandedChart === chart.id ? null : chart.id)}
-          />
-        ))}
-      </motion.div>
-    </motion.div>
+        <section className="grid gap-4 xl:grid-cols-[380px_1fr]">
+          <div className="space-y-4">
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Add Process</h2>
+              <div className="mt-4 flex gap-2">
+                <input
+                  value={processDraft}
+                  onChange={(event) => setProcessDraft(event.target.value)}
+                  className={inputClass}
+                  placeholder="Torque Press Line 1"
+                />
+                <button
+                  onClick={registerProcess}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-slate-950 transition hover:bg-emerald-400"
+                  title="Add process"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Submit Measurement</h2>
+              <div className="mt-4 flex gap-2">
+                <input
+                  value={measurementDraft}
+                  onChange={(event) => setMeasurementDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void submitMeasurement();
+                  }}
+                  type="number"
+                  step="0.0001"
+                  className={inputClass}
+                  placeholder="5.012"
+                />
+                <button
+                  onClick={() => void submitMeasurement()}
+                  disabled={loading}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-cyan-400 text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                  title="Submit measurement"
+                >
+                  {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={17} />}
+                </button>
+              </div>
+              <button
+                onClick={() => void loadSampleSet()}
+                className="mt-3 inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950/70 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+              >
+                <RotateCcw size={14} /> Load 15 baseline points
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Metric label="Points" value={measurements.length} />
+              <Metric label="Mean" value={formatNumber(analysis?.mean)} />
+              <Metric label="UCL" value={formatNumber(analysis?.ucl)} />
+              <Metric label="LCL" value={formatNumber(analysis?.lcl)} />
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Control Chart</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {historyLoading ? "Loading persisted history..." : `${chartPoints.length} measurements in the active window`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {activeViolations.length ? (
+                  <span className="inline-flex items-center gap-2 rounded-full border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300">
+                    <AlertTriangle size={14} /> {activeViolations.length} violation{activeViolations.length === 1 ? "" : "s"}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+                    <CheckCircle2 size={14} /> In control
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-5 h-[430px] rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+              {chartPoints.length >= 2 && analysis ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartPoints} margin={{ top: 15, right: 24, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.14)" vertical={false} />
+                    <ReferenceArea y1={zoneOneUpper} y2={zoneOneLower} fill="rgba(34,197,94,0.04)" />
+                    <ReferenceArea y1={zoneTwoUpper} y2={zoneOneUpper} fill="rgba(234,179,8,0.04)" />
+                    <ReferenceArea y1={zoneOneLower} y2={zoneTwoLower} fill="rgba(234,179,8,0.04)" />
+                    <ReferenceLine y={analysis.ucl} stroke="#f43f5e" strokeDasharray="8 4" label={{ value: "UCL", position: "right", fill: "#fb7185", fontSize: 11 }} />
+                    <ReferenceLine y={centerLine} stroke="#22d3ee" strokeDasharray="4 4" label={{ value: "CL", position: "right", fill: "#67e8f9", fontSize: 11 }} />
+                    <ReferenceLine y={analysis.lcl} stroke="#f43f5e" strokeDasharray="8 4" label={{ value: "LCL", position: "right", fill: "#fb7185", fontSize: 11 }} />
+                    <XAxis dataKey="index" tickFormatter={(value) => String(Number(value) + 1)} tick={{ fill: "#94a3b8", fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} width={62} tickFormatter={(value) => Number(value).toFixed(3)} axisLine={false} tickLine={false} domain={["auto", "auto"]} />
+                    <Tooltip content={<SPCTooltip />} />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke="#22d3ee"
+                      strokeWidth={2}
+                      dot={(props) => {
+                        if (typeof props.cx !== "number" || typeof props.cy !== "number") return null;
+                        const point = props.payload as ChartPoint;
+                        return (
+                          <circle
+                            key={props.index}
+                            cx={props.cx}
+                            cy={props.cy}
+                            r={point.violation ? 5 : 3}
+                            fill={point.violation ? "#fb7185" : "#22d3ee"}
+                            stroke="#020617"
+                            strokeWidth={2}
+                          />
+                        );
+                      }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="flex h-full items-center justify-center text-center">
+                  <div>
+                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700 bg-slate-900 text-slate-400">
+                      <Activity size={18} />
+                    </div>
+                    <p className="mt-4 text-sm font-semibold text-slate-200">Waiting for measurements</p>
+                    <p className="mt-1 text-sm text-slate-500">Submit at least two values to render control limits.</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {activeViolations.length ? (
+              <div className="mt-4 space-y-2">
+                {activeViolations.map((violation, index) => (
+                  <div key={`${violation.rule}-${violation.index}-${index}`} className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                    <span className="font-semibold">{violation.rule}</span> at measurement {violation.index + 1}: {violation.description}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/95 p-4">
+      <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      <div className="mt-2 text-xl font-semibold text-slate-100">{value}</div>
+    </div>
   );
 }

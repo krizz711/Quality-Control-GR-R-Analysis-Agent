@@ -53,7 +53,7 @@ async function proxyRequest(
     // Log detailed error server-side for debugging
     // eslint-disable-next-line no-console
     console.error('proxyRequest error fetching', targetUrl.toString(), err);
-    const message = err?.message || String(err);
+    const message = err instanceof Error ? err.message : String(err);
     return new Response(message, {
       status: 502,
       headers: { 'content-type': 'text/plain' },

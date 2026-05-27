@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -328,6 +329,39 @@ async def analyze_grr(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
                     completed_at=timestamp,
                 )
             )
+            if result.total_grr > 30.0:
+                alert_id = uuid.uuid4()
+                session.add(
+                    Alert(
+                        id=alert_id,
+                        type="grr_fail",
+                        severity="high",
+                        message=f"GR&R study failed with {result.total_grr:.1f}% variation. Review the torque measurement system.",
+                        process_name="GR&R Analysis",
+                        status="active",
+                        payload={
+                            "source": "api_grr_analyze",
+                            "study_id": str(study_id),
+                            "grr_percent": result.total_grr,
+                            "threshold": 30.0,
+                        },
+                        created_at=timestamp,
+                    )
+                )
+                await _audit(
+                    session,
+                    actor="system",
+                    action="alert_triggered",
+                    entity_type="alert",
+                    entity_id=str(alert_id),
+                    details={
+                        "type": "grr_fail",
+                        "severity": "high",
+                        "process_name": "GR&R Analysis",
+                        "study_id": str(study_id),
+                        "grr_percent": result.total_grr,
+                    },
+                )
             await _audit(
                 session,
                 actor="system",
@@ -439,6 +473,45 @@ async def analyze_spc_data(body: SPCDataRequest) -> SPCDataResponse:
                         shift=None,
                         created_by="api_spc",
                     )
+                )
+
+            if violations:
+                worst = next((violation for violation in violations if violation.rule == "rule_1"), violations[0])
+                severity = "critical" if worst.rule == "rule_1" else "high"
+                alert_id = uuid.uuid4()
+                session.add(
+                    Alert(
+                        id=alert_id,
+                        type="spc_violation",
+                        severity=severity,
+                        message=(
+                            f"{body.process_name} violated {worst.rule}: "
+                            f"{worst.description} at measurement {worst.index + 1} ({worst.value:.4f})."
+                        ),
+                        process_name=body.process_name,
+                        status="active",
+                        payload={
+                            "source": "api_spc_data",
+                            "violations": [violation.model_dump() for violation in violations],
+                            "ucl": ucl,
+                            "lcl": lcl,
+                            "target": body.target,
+                        },
+                        created_at=timestamp,
+                    )
+                )
+                await _audit(
+                    session,
+                    actor="system",
+                    action="alert_triggered",
+                    entity_type="alert",
+                    entity_id=str(alert_id),
+                    details={
+                        "type": "spc_violation",
+                        "severity": severity,
+                        "process_name": body.process_name,
+                        "violations": [violation.model_dump() for violation in violations],
+                    },
                 )
 
             await _audit(
@@ -631,10 +704,15 @@ async def resolve_alert(alert_id: str) -> AlertResolveResponse:
 
     resolved_at = _now()
     async with AsyncSessionLocal() as session:
-        result = await session.execute(text("SELECT * FROM alerts WHERE id = :id"), {"id": str(alert_uuid)})
+        result = await session.execute(
+            text("SELECT * FROM alerts WHERE id IN (:uuid_id, :hex_id)"),
+            {"uuid_id": str(alert_uuid), "hex_id": alert_uuid.hex},
+        )
         row = result.mappings().first()
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+        stored_id = str(row["id"])
 
         await session.execute(
             text(
@@ -644,19 +722,19 @@ async def resolve_alert(alert_id: str) -> AlertResolveResponse:
                 WHERE id = :id
                 """
             ),
-            {"resolved_at": resolved_at, "resolved_by": "api", "id": str(alert_uuid)},
+            {"resolved_at": resolved_at, "resolved_by": "api", "id": stored_id},
         )
         await _audit(
             session,
             actor="system",
             action="alert_resolved",
             entity_type="alert",
-            entity_id=str(alert_uuid),
+            entity_id=stored_id,
             details={"status": "resolved"},
         )
         await session.commit()
 
-    return AlertResolveResponse(alert_id=str(alert_uuid), resolved_at=resolved_at)
+    return AlertResolveResponse(alert_id=alert_id, resolved_at=resolved_at)
 
 
 @router.get("/audit-log", response_model=list[AuditLogResponse])
@@ -674,15 +752,25 @@ async def get_audit_log() -> list[AuditLogResponse]:
         )
         rows = result.mappings().all()
 
-    return [
-        AuditLogResponse(
-            id=str(row["id"]),
-            timestamp=row["created_at"],
-            actor=row["actor"],
-            action=row["action"],
-            entity_type=row["entity_type"],
-            entity_id=row["entity_id"],
-            details=row.get("details"),
+    audit_items: list[AuditLogResponse] = []
+    for row in rows:
+        details = row.get("details")
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except json.JSONDecodeError:
+                details = {"raw": details}
+
+        audit_items.append(
+            AuditLogResponse(
+                id=str(row["id"]),
+                timestamp=row["created_at"],
+                actor=row["actor"],
+                action=row["action"],
+                entity_type=row["entity_type"],
+                entity_id=row["entity_id"],
+                details=details,
+            )
         )
-        for row in rows
-    ]
+
+    return audit_items
