@@ -121,7 +121,7 @@ function createMeasurementRows(operators: number, parts: number, trials: number)
           operator: `Operator ${operatorIndex}`,
           part: partIndex,
           trial: trialIndex,
-          value: Number.NaN,
+          value: "" as unknown as number,
         });
       }
     }
@@ -251,13 +251,16 @@ export default function GRRPage() {
 
       const nextRows = fields.map((field) => {
         const match = importedRows.find(
-          (row) => row.operator === field.operator && row.part === field.part && row.trial === field.trial,
+          (row) =>
+            (row.operator === field.operator || `Operator ${row.operator}` === field.operator) &&
+            row.part === field.part &&
+            row.trial === field.trial,
         );
         return {
           operator: field.operator,
           part: field.part,
           trial: field.trial,
-          value: match?.value ?? Number.NaN,
+          value: match?.value ?? ("" as unknown as number),
         };
       });
 
@@ -497,7 +500,11 @@ export default function GRRPage() {
                     </label>
                     <button
                       type="button"
-                      onClick={() => setStep(3)}
+                      onClick={async () => {
+                        const valid = await trigger("measurements");
+                        if (valid) setStep(3);
+                        else showToast("Please fill out all measurements before proceeding.");
+                      }}
                       className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
                     >
                       Review Analysis Step <ChevronRight size={14} />
@@ -541,8 +548,9 @@ export default function GRRPage() {
                                 {...register(`measurements.${index}.value`, {
                                   valueAsNumber: true,
                                   required: "Measurement is required",
+                                  validate: (v) => !Number.isNaN(v) || "Required",
                                 })}
-                                className={inputClass}
+                                className={`${inputClass} ${errors.measurements?.[index]?.value ? "border-rose-500/50 bg-rose-500/10 focus:border-rose-400 focus:ring-rose-500/20" : ""}`}
                                 placeholder="Enter value"
                               />
                             </td>
@@ -570,7 +578,11 @@ export default function GRRPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setStep(3)}
+                    onClick={async () => {
+                      const valid = await trigger("measurements");
+                      if (valid) setStep(3);
+                      else showToast("Please fill out all measurements before proceeding.");
+                    }}
                     className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
                   >
                     Proceed to Analysis <ArrowRight size={16} />

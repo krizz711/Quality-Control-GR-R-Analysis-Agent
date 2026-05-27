@@ -1,377 +1,391 @@
 "use client";
 
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useEffect, useMemo } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  User,
   Sparkles,
-  ChevronDown,
-  ChevronRight,
   Search,
-  Filter,
-  Shield,
-  Eye,
-  MessageSquare,
-  ArrowRight,
-  XCircle,
-  AlertCircle,
-  Check,
+  Volume2,
+  VolumeX,
+  Activity,
+  TrendingUp,
+  X,
+  Info,
+  Loader2
 } from "lucide-react";
-import { qualityAlerts, systemMetrics, type QualityAlert } from "@/lib/mock-data";
-import { timeAgo } from "@/lib/utils";
+import { getAlerts, resolveAlert, showToast, type AlertItem } from "@/api/apiClient";
 
-const container = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.05 } },
-};
-const item = {
-  hidden: { opacity: 0, y: 12 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" as const } },
-};
+function formatTimeAgo(dateString: string) {
+  const date = new Date(dateString);
+  const diff = Date.now() - date.getTime();
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
 
-function AlertDetailPanel({ alert }: { alert: QualityAlert }) {
-  const [showAI, setShowAI] = useState(true);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} mins ago`;
+  if (hours < 24) return `${hours} hours ago`;
+  return `${days} days ago`;
+}
 
+function isToday(dateString: string | null | undefined) {
+  if (!dateString) return false;
+  const date = new Date(dateString);
+  const today = new Date();
+  return date.getDate() === today.getDate() &&
+    date.getMonth() === today.getMonth() &&
+    date.getFullYear() === today.getFullYear();
+}
+
+function AlertIcon({ type }: { type: string }) {
+  if (type === "grr_fail") return <AlertTriangle size={18} className="text-amber-500" />;
+  if (type === "spc_violation") return <Activity size={18} className="text-rose-500" />;
+  if (type === "trend_detected") return <TrendingUp size={18} className="text-sky-500" />;
+  return <Info size={18} className="text-slate-500" />;
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const colors: Record<string, string> = {
+    critical: "bg-rose-500/10 text-rose-400 border-rose-500/20",
+    high: "bg-orange-500/10 text-orange-400 border-orange-500/20",
+    medium: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    low: "bg-sky-500/10 text-sky-400 border-sky-500/20",
+  };
+  const color = colors[severity.toLowerCase()] || "bg-slate-500/10 text-slate-400 border-slate-500/20";
   return (
-    <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className="h-full overflow-y-auto"
-    >
-      {/* Header */}
-      <div className="px-6 py-5 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-        <div className="flex items-center gap-2 mb-3">
-          <span
-            className={`badge ${alert.severity === "critical" ? "badge-critical" : "badge-warning"}`}
-          >
-            {alert.severity === "critical" ? <AlertTriangle size={10} /> : <AlertCircle size={10} />}
-            {alert.severity}
-          </span>
-          <span
-            className={`badge ${
-              alert.status === "open"
-                ? "badge-critical"
-                : alert.status === "investigating"
-                ? "badge-warning"
-                : "badge-success"
-            }`}
-          >
-            {alert.status}
-          </span>
-        </div>
-        <h2 className="text-base font-bold mb-1" style={{ color: "var(--text-primary)" }}>
-          {alert.rule_label}
-        </h2>
-        <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-          {alert.message}
-        </p>
-      </div>
-
-      {/* Metadata */}
-      <div className="px-6 py-4 border-b grid grid-cols-2 gap-3" style={{ borderColor: "var(--border-subtle)" }}>
-        {[
-          { label: "Machine", value: alert.machine_id },
-          { label: "Part", value: alert.part_number },
-          { label: "Characteristic", value: alert.characteristic },
-          { label: "Detected", value: timeAgo(alert.created_at) },
-          { label: "Assignee", value: alert.assignee || "Unassigned" },
-          { label: "Rule", value: alert.rule.toUpperCase() },
-        ].map((m, i) => (
-          <div key={i}>
-            <div className="text-[10px] font-medium uppercase tracking-wider mb-0.5" style={{ color: "var(--text-ghost)" }}>
-              {m.label}
-            </div>
-            <div className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
-              {m.value}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* AI Analysis */}
-      <div className="px-6 py-4 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-        <button
-          onClick={() => setShowAI(!showAI)}
-          className="flex items-center justify-between w-full mb-3"
-        >
-          <div className="flex items-center gap-2">
-            <Sparkles size={14} style={{ color: "var(--accent)" }} />
-            <span className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-              AI Root Cause Analysis
-            </span>
-          </div>
-          <motion.div animate={{ rotate: showAI ? 180 : 0 }}>
-            <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />
-          </motion.div>
-        </button>
-        <AnimatePresence>
-          {showAI && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.25 }}
-            >
-              <div
-                className="rounded-lg p-4 mb-3"
-                style={{ background: "var(--accent-bg)", border: "1px solid rgba(99,145,255,0.08)" }}
-              >
-                <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                  {alert.ai_analysis}
-                </p>
-              </div>
-              <div
-                className="rounded-lg p-4"
-                style={{ background: "var(--success-bg)", border: "1px solid rgba(52,211,153,0.1)" }}
-              >
-                <div className="flex items-center gap-1.5 mb-2">
-                  <CheckCircle2 size={12} style={{ color: "var(--success)" }} />
-                  <span className="text-[11px] font-semibold" style={{ color: "var(--success)" }}>
-                    Recommended Action
-                  </span>
-                </div>
-                <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                  {alert.recommended_action}
-                </p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* Actions */}
-      <div className="px-6 py-4">
-        <div className="flex items-center gap-2">
-          {alert.status === "open" && (
-            <>
-              <button
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium"
-                style={{ background: "var(--accent)", color: "white" }}
-              >
-                <Check size={13} /> Acknowledge
-              </button>
-              <button
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium"
-                style={{
-                  background: "var(--bg-elevated)",
-                  color: "var(--text-secondary)",
-                  border: "1px solid var(--border-default)",
-                }}
-              >
-                <User size={13} /> Assign
-              </button>
-            </>
-          )}
-          {alert.status === "investigating" && (
-            <button
-              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium"
-              style={{ background: "var(--success)", color: "white" }}
-            >
-              <CheckCircle2 size={13} /> Resolve
-            </button>
-          )}
-          <button
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[12px] font-medium"
-            style={{
-              background: "var(--bg-elevated)",
-              color: "var(--text-secondary)",
-              border: "1px solid var(--border-default)",
-            }}
-          >
-            <MessageSquare size={13} /> Comment
-          </button>
-        </div>
-      </div>
-    </motion.div>
+    <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${color}`}>
+      {severity}
+    </span>
   );
 }
 
 export default function AlertsPage() {
-  const [selectedAlert, setSelectedAlert] = useState<QualityAlert>(qualityAlerts[0]);
-  const [filterSeverity, setFilterSeverity] = useState<"all" | "critical" | "warning">("all");
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "resolved">("all");
+  const [severityFilter, setSeverityFilter] = useState<"all" | "critical" | "high" | "medium" | "low">("all");
   const [search, setSearch] = useState("");
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [selectedAlert, setSelectedAlert] = useState<AlertItem | null>(null);
 
-  const filtered = qualityAlerts.filter((a) => {
-    if (filterSeverity !== "all" && a.severity !== filterSeverity) return false;
-    if (search && !a.message.toLowerCase().includes(search.toLowerCase()) && !a.machine_id.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  const fetchAlerts = async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
+      const res = await getAlerts({ limit: 100 });
+      setAlerts(res.items);
+    } catch (e) {
+      console.error(e);
+      if (!silent) showToast("Failed to fetch alerts");
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
 
-  const openCount = qualityAlerts.filter((a) => a.status === "open").length;
-  const criticalCount = qualityAlerts.filter((a) => a.severity === "critical" && a.status === "open").length;
-  const investigatingCount = qualityAlerts.filter((a) => a.status === "investigating").length;
+  useEffect(() => {
+    fetchAlerts();
+  }, []);
+
+  // Polling simulation every 15s
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await getAlerts({ limit: 100 });
+        setAlerts(prev => {
+          if (res.items.length > 0 && prev.length > 0) {
+            const latestNew = res.items[0];
+            const latestOld = prev[0];
+            if (latestNew.id !== latestOld.id) {
+              if (soundEnabled) {
+                // Sound enabled - in a real app this would play an audio file
+                // For this simulation we just show the toast
+              }
+              showToast(`New Alert: ${latestNew.message}`);
+            }
+          }
+          return res.items;
+        });
+      } catch (e) {
+        // ignore polling errors to prevent console spam
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [soundEnabled]);
+
+  const handleResolve = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await resolveAlert(id);
+      showToast("Alert resolved successfully");
+      fetchAlerts(true);
+      if (selectedAlert?.id === id) {
+        setSelectedAlert(prev => prev ? { ...prev, status: "resolved", resolved_at: new Date().toISOString() } : null);
+      }
+    } catch (e) {
+      // toast shown by interceptor
+    }
+  };
+
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter(a => {
+      if (statusFilter !== "all" && a.status !== statusFilter) return false;
+      if (severityFilter !== "all" && a.severity !== severityFilter) return false;
+      if (search && !a.message.toLowerCase().includes(search.toLowerCase()) && !a.process_name.toLowerCase().includes(search.toLowerCase())) return false;
+      return true;
+    });
+  }, [alerts, statusFilter, severityFilter, search]);
+
+  const stats = useMemo(() => {
+    return {
+      active: alerts.filter(a => a.status === "active").length,
+      critical: alerts.filter(a => a.status === "active" && a.severity === "critical").length,
+      resolvedToday: alerts.filter(a => a.status === "resolved" && isToday(a.resolved_at)).length,
+    };
+  }, [alerts]);
 
   return (
-    <motion.div
-      variants={container}
-      initial="hidden"
-      animate="show"
-      className="h-full flex flex-col"
-      style={{ background: "var(--bg-root)" }}
-    >
-      {/* Header */}
-      <motion.div variants={item} className="px-6 py-5 border-b shrink-0" style={{ borderColor: "var(--border-subtle)" }}>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h1 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>
-              Alert Inbox
-            </h1>
-            <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-              Quality violation monitoring · Incident response center
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {/* Alert accuracy KPI */}
-            <div
-              className="flex items-center gap-2 px-3 py-2 rounded-lg"
-              style={{ background: "var(--success-bg)", border: "1px solid rgba(52,211,153,0.1)" }}
-            >
-              <Shield size={13} style={{ color: "var(--success)" }} />
-              <span className="text-[11px] font-semibold" style={{ color: "var(--success)" }}>
-                {systemMetrics.alert_accuracy}% Accuracy
-              </span>
-              <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
-                target &gt;95%
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Stats + filters */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            {[
-              { label: "Open", count: openCount, color: "var(--critical)" },
-              { label: "Critical", count: criticalCount, color: "var(--critical)" },
-              { label: "Investigating", count: investigatingCount, color: "var(--warning)" },
-            ].map((s) => (
-              <div key={s.label} className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
-                <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
-                  {s.count} {s.label}
-                </span>
+    <div className="min-h-full bg-slate-950 px-4 py-6 text-slate-100 md:px-6">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6">
+        
+        {/* Header & Stats Bar */}
+        <header className="rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-5 shadow-lg">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-rose-500/20 bg-rose-500/10 text-rose-400">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
+                    Alerts Management
+                  </h1>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Monitor quality violations and system notifications.
+                  </p>
+                </div>
               </div>
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <div
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
-              style={{ background: "var(--bg-surface)", border: "1px solid var(--border-default)" }}
-            >
-              <Search size={13} style={{ color: "var(--text-ghost)" }} />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search alerts..."
-                className="bg-transparent text-[12px] outline-none w-40"
-                style={{ color: "var(--text-primary)" }}
-              />
             </div>
-            <div className="flex items-center rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-default)" }}>
-              {(["all", "critical", "warning"] as const).map((f) => (
+            
+            <div className="flex items-center gap-4 text-sm">
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
+                <span className="text-xl font-bold text-amber-400">{stats.active}</span>
+                <span className="text-xs uppercase tracking-wider text-slate-500">Active</span>
+              </div>
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
+                <span className="text-xl font-bold text-rose-400">{stats.critical}</span>
+                <span className="text-xs uppercase tracking-wider text-slate-500">Critical</span>
+              </div>
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
+                <span className="text-xl font-bold text-emerald-400">{stats.resolvedToday}</span>
+                <span className="text-xs uppercase tracking-wider text-slate-500">Resolved Today</span>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
+              {(["all", "active", "resolved"] as const).map(s => (
                 <button
-                  key={f}
-                  onClick={() => setFilterSeverity(f)}
-                  className="px-2.5 py-1.5 text-[10px] font-medium capitalize transition-colors"
-                  style={{
-                    background: filterSeverity === f ? "var(--accent-bg)" : "var(--bg-surface)",
-                    color: filterSeverity === f ? "var(--accent)" : "var(--text-muted)",
-                  }}
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-colors ${statusFilter === s ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
                 >
-                  {f}
+                  {s}
+                </button>
+              ))}
+            </div>
+            
+            <div className="h-6 w-px bg-slate-700 hidden sm:block"></div>
+
+            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
+              {(["all", "critical", "high", "medium", "low"] as const).map(sev => (
+                <button
+                  key={sev}
+                  onClick={() => setSeverityFilter(sev)}
+                  className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-colors ${severityFilter === sev ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                >
+                  {sev}
                 </button>
               ))}
             </div>
           </div>
-        </div>
-      </motion.div>
 
-      {/* Split pane */}
-      <div className="flex flex-1 min-h-0">
-        {/* Alert list */}
-        <motion.div
-          variants={item}
-          className="w-full lg:w-[420px] border-r overflow-y-auto shrink-0"
-          style={{ borderColor: "var(--border-subtle)" }}
-        >
-          {filtered.map((alert) => {
-            const isSelected = selectedAlert.id === alert.id;
-            return (
-              <motion.div
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search alerts..."
+                className="w-full sm:w-48 rounded-xl border border-slate-700 bg-slate-950/70 py-2 pl-9 pr-4 text-xs text-slate-100 outline-none focus:border-slate-500"
+              />
+            </div>
+            <button
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              title={soundEnabled ? "Mute Notifications" : "Unmute Notifications"}
+            >
+              {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Alert List */}
+        <div className="grid gap-3">
+          {loading && alerts.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 flex flex-col items-center">
+              <Loader2 size={24} className="animate-spin mb-2" />
+              Loading alerts...
+            </div>
+          ) : filteredAlerts.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 bg-slate-900/50 rounded-2xl border border-dashed border-slate-800">
+              No alerts found matching the current filters.
+            </div>
+          ) : (
+            filteredAlerts.map(alert => (
+              <div
                 key={alert.id}
-                onClick={() => setSelectedAlert(alert)}
-                whileHover={{ backgroundColor: "var(--bg-hover)" }}
-                className="flex items-start gap-3 px-5 py-4 border-b cursor-pointer transition-colors"
-                style={{
-                  borderColor: "var(--border-subtle)",
-                  background: isSelected ? "var(--accent-bg)" : "transparent",
-                  borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
-                }}
+                className="group flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 transition-colors hover:border-slate-700 hover:bg-slate-800/80"
               >
-                <div
-                  className="w-2.5 h-2.5 rounded-full mt-1 shrink-0"
-                  style={{
-                    background: alert.severity === "critical" ? "var(--critical)" : "var(--warning)",
-                    boxShadow: alert.status === "open" && alert.severity === "critical"
-                      ? "0 0 8px rgba(248,113,113,0.4)"
-                      : "none",
-                  }}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[12px] font-semibold truncate" style={{ color: "var(--text-primary)" }}>
-                      {alert.rule_label}
-                    </span>
-                    <span
-                      className={`badge ${
-                        alert.status === "open"
-                          ? "badge-critical"
-                          : alert.status === "investigating"
-                          ? "badge-warning"
-                          : "badge-success"
-                      }`}
-                      style={{ fontSize: "9px" }}
-                    >
-                      {alert.status}
-                    </span>
+                <div className="flex items-start gap-4">
+                  <div className="mt-1">
+                    <AlertIcon type={alert.type} />
                   </div>
-                  <p className="text-[11px] leading-relaxed truncate" style={{ color: "var(--text-secondary)" }}>
-                    {alert.message.slice(0, 90)}
-                  </p>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
-                      {alert.machine_id}
-                    </span>
-                    <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>•</span>
-                    <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>
-                      {timeAgo(alert.created_at)}
-                    </span>
-                    {alert.assignee && (
-                      <>
-                        <span className="text-[10px]" style={{ color: "var(--text-ghost)" }}>•</span>
-                        <span className="text-[10px] flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
-                          <User size={9} /> {alert.assignee}
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <SeverityBadge severity={alert.severity} />
+                      <span className="text-xs font-medium text-slate-400">
+                        {alert.process_name}
+                      </span>
+                      {alert.status === "resolved" && (
+                        <span className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                          Resolved
                         </span>
-                      </>
-                    )}
+                      )}
+                    </div>
+                    <div className="text-sm font-medium text-slate-200 line-clamp-2 leading-relaxed max-w-2xl">
+                      {alert.message}
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-2 text-[11px] text-slate-500">
+                      <Clock size={12} />
+                      <span>{formatTimeAgo(alert.created_at)}</span>
+                    </div>
                   </div>
                 </div>
-                <ChevronRight size={14} className="mt-1 shrink-0" style={{ color: "var(--text-ghost)" }} />
-              </motion.div>
-            );
-          })}
-        </motion.div>
 
-        {/* Detail pane */}
-        <motion.div variants={item} className="hidden lg:block flex-1 min-w-0" style={{ background: "var(--bg-surface)" }}>
-          <AlertDetailPanel alert={selectedAlert} />
-        </motion.div>
+                <div className="flex items-center gap-2 shrink-0 sm:ml-auto">
+                  {alert.status === "active" && (
+                    <button
+                      onClick={(e) => handleResolve(alert.id, e)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/20"
+                    >
+                      <CheckCircle2 size={14} /> Resolve
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setSelectedAlert(alert)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-700"
+                  >
+                    <Info size={14} /> View Details
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
-    </motion.div>
+
+      {/* Detail Modal */}
+      {selectedAlert && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-3xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between border-b border-slate-800 p-5">
+              <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+                <AlertIcon type={selectedAlert.type} /> Alert Details
+              </h2>
+              <button
+                onClick={() => setSelectedAlert(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="overflow-y-auto p-5 space-y-6">
+              <div className="flex gap-2">
+                <SeverityBadge severity={selectedAlert.severity} />
+                <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${selectedAlert.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                  {selectedAlert.status}
+                </span>
+              </div>
+
+              <div>
+                <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Process</div>
+                <div className="text-base font-semibold text-slate-200">{selectedAlert.process_name}</div>
+              </div>
+
+              <div>
+                <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Message</div>
+                <div className="text-sm leading-relaxed text-slate-300 bg-slate-950/50 p-4 rounded-xl border border-slate-800">
+                  {selectedAlert.message}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Created</div>
+                  <div className="text-sm text-slate-300 flex items-center gap-1.5">
+                    <Clock size={14} className="text-slate-500" />
+                    {new Date(selectedAlert.created_at).toLocaleString()}
+                  </div>
+                </div>
+                {selectedAlert.resolved_at && (
+                  <div>
+                    <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Resolved</div>
+                    <div className="text-sm text-slate-300 flex items-center gap-1.5">
+                      <CheckCircle2 size={14} className="text-emerald-500" />
+                      {new Date(selectedAlert.resolved_at).toLocaleString()}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-widest mb-2">
+                  <Sparkles size={14} className="text-indigo-400" /> AI Analysis
+                </div>
+                <div className="text-sm leading-relaxed text-slate-300 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
+                  This alert was triggered by the automated monitoring system based on the severity and specific rules configured for <code className="text-indigo-300 bg-indigo-500/10 px-1 rounded">{selectedAlert.process_name}</code>. 
+                  <br /><br />
+                  <strong>Recommendation:</strong> Investigate the root cause immediately to ensure quality standards are met. If this is a recurring issue, consider adjusting the process control limits or retraining operators.
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-800 p-4 flex justify-end gap-3 bg-slate-900/50 rounded-b-3xl">
+              <button
+                onClick={() => setSelectedAlert(null)}
+                className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-slate-100"
+              >
+                Close
+              </button>
+              {selectedAlert.status === "active" && (
+                <button
+                  onClick={(e) => handleResolve(selectedAlert.id, e)}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                >
+                  <CheckCircle2 size={16} /> Resolve Alert
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
