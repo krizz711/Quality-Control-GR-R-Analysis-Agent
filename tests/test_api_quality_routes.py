@@ -65,7 +65,7 @@ def test_api_grr_analyze_and_history(mock_session_local: MagicMock, mock_gemini:
         "partTolerance": 1.0,
     }
 
-    response = client.post("/api/grr/analyze", json=payload)
+    response = client.post("/api/v1/grr/analyze", json=payload)
 
     assert response.status_code == 201
     data = response.json()
@@ -93,7 +93,7 @@ def test_api_grr_analyze_and_history(mock_session_local: MagicMock, mock_gemini:
     history_result = _result_with_rows([history_row])
     session.execute = AsyncMock(return_value=history_result)
 
-    history = client.get("/api/grr/history")
+    history = client.get("/api/v1/grr/history")
     assert history.status_code == 200
     history_data = history.json()
     assert history_data[0]["verdict"] == "acceptable"
@@ -103,7 +103,7 @@ def test_api_grr_analyze_and_history(mock_session_local: MagicMock, mock_gemini:
 
 def test_api_grr_analyze_rejects_small_sample() -> None:
     response = client.post(
-        "/api/grr/analyze",
+        "/api/v1/grr/analyze",
         json={
             "measurements": [
                 {"operator": "A", "part": 1, "trial": 1, "value": 10.0},
@@ -122,7 +122,7 @@ def test_api_spc_data_and_history(mock_session_local: MagicMock, mock_gemini: As
     session = _wire_session(mock_session_local)
 
     response = client.post(
-        "/api/spc/data",
+        "/api/v1/spc/data",
         json={
             "process_name": "line-1",
             "measurements": [10.0, 10.1, 10.2, 10.3, 10.4, 11.5, 10.5, 10.6],
@@ -145,7 +145,7 @@ def test_api_spc_data_and_history(mock_session_local: MagicMock, mock_gemini: As
     history_result = _result_with_rows(history_rows)
     session.execute = AsyncMock(return_value=history_result)
 
-    history = client.get("/api/spc/history/line-1")
+    history = client.get("/api/v1/spc/history/line-1")
     assert history.status_code == 200
     assert history.json()["process_name"] == "line-1"
     assert history.json()["points"][0]["value"] == 10.7
@@ -184,12 +184,12 @@ def test_dashboard_summary_and_audit_log(mock_session_local: MagicMock) -> None:
 
     session = _wire_session(mock_session_local, [grr_result, alerts_result, violations_result, audit_result])
 
-    summary = client.get("/api/dashboard/summary")
+    summary = client.get("/api/v1/dashboard/summary")
     assert summary.status_code == 200
     assert summary.json()["total_grr_analyses"] == 2
     assert summary.json()["active_alerts_count"] == 1
 
-    audit = client.get("/api/audit-log")
+    audit = client.get("/api/v1/audit-log")
     assert audit.status_code == 200
     assert audit.json()[0]["action"] == "alert_triggered"
     assert session.execute.await_count >= 4
@@ -200,7 +200,7 @@ def test_alert_lifecycle(mock_session_local: MagicMock) -> None:
     trigger_session = _wire_session(mock_session_local)
 
     trigger = client.post(
-        "/api/alerts/trigger",
+        "/api/v1/alerts/trigger",
         json={
             "type": "spc_violation",
             "severity": "high",
@@ -247,13 +247,13 @@ def test_alert_lifecycle(mock_session_local: MagicMock) -> None:
         [count_result, list_result, resolve_result, update_result],
     )
 
-    alerts = client.get("/api/alerts?status=active&severity=high&limit=50")
+    alerts = client.get("/api/v1/alerts?status=active&severity=high&limit=50")
     assert alerts.status_code == 200
     assert alerts.json()["total"] == 1
     assert alerts.json()["items"][0]["severity"] == "high"
 
     alert_id = alerts.json()["items"][0]["id"]
-    resolve = client.put(f"/api/alerts/{alert_id}/resolve")
+    resolve = client.put(f"/api/v1/alerts/{alert_id}/resolve")
     assert resolve.status_code == 200
     assert resolve.json()["alert_id"] == alert_id
     assert session.commit.await_count >= 1
@@ -269,7 +269,7 @@ def test_alert_feedback_and_accuracy(mock_session_local: MagicMock) -> None:
     session = _wire_session(mock_session_local, [alert_result, accuracy_result])
 
     feedback = client.post(
-        f"/api/alerts/{alert_id}/feedback",
+        f"/api/v1/alerts/{alert_id}/feedback",
         json={
             "is_relevant": False,
             "category": "false_positive",
@@ -281,7 +281,7 @@ def test_alert_feedback_and_accuracy(mock_session_local: MagicMock) -> None:
     assert feedback.json()["alert_id"] == str(alert_id)
     assert feedback.json()["is_relevant"] is False
 
-    accuracy = client.get("/api/alerts/accuracy")
+    accuracy = client.get("/api/v1/alerts/accuracy")
     assert accuracy.status_code == 200
     assert accuracy.json()["feedback_count"] == 4
     assert accuracy.json()["accuracy_rate"] == 75.0
@@ -295,7 +295,7 @@ def test_mes_measurement_integration(mock_session_local: MagicMock, mock_gemini:
     session = _wire_session(mock_session_local)
 
     response = client.post(
-        "/api/integrations/mes/measurements",
+        "/api/v1/integrations/mes/measurements",
         json={
             "event_id": "mes-1",
             "process_name": "Torque Press Line 1",
@@ -317,7 +317,7 @@ def test_qms_equipment_event_without_measurements(mock_session_local: MagicMock)
     session = _wire_session(mock_session_local)
 
     response = client.post(
-        "/api/integrations/qms/inspection-equipment",
+        "/api/v1/integrations/qms/inspection-equipment",
         json={
             "event_id": "qms-1",
             "equipment_id": "torque-tool-7",

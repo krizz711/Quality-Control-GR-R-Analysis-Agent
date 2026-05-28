@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
-import { api, ApiError } from './api';
+import { apiClient, type ApiError } from '@/api/apiClient';
 import type {
   UIGRRStudy,
   UISPCChart,
@@ -60,7 +60,7 @@ export function useAsync<T>(
  */
 export function useGRRReviews(): UseAsyncState<UIGRRStudy[]> {
   return useAsync(async () => {
-    const reviews = await api.get<ReviewQueueResponse[]>('/reviews');
+    const reviews = await apiClient.get<ReviewQueueResponse[]>('/api/v1/reviews');
     return reviews.map(transformReviewToUIGRRStudy);
   });
 }
@@ -74,7 +74,7 @@ export function useGRRStudy(
   return useAsync(
     async () => {
       if (!studyId) return null;
-      const response = await api.get<GRRStudyResponse>(`/studies/${studyId}`);
+      const response = await apiClient.get<GRRStudyResponse>(`/api/v1/studies/${studyId}`);
       return transformStudyResponseToUI(studyId, response);
     },
     [studyId]
@@ -88,7 +88,7 @@ export function useGRRNarrative(studyId: string | null) {
   return useAsync(
     async () => {
       if (!studyId) return null;
-      const response = await api.post(`/studies/${studyId}/narrative`);
+      const response = await apiClient.post(`/api/v1/studies/${studyId}/narrative`);
       return response;
     },
     [studyId]
@@ -99,7 +99,7 @@ export function useGRRNarrative(studyId: string | null) {
  * Download GR&R PDF report
  */
 export async function downloadGRRReport(studyId: string) {
-  const blob = await api.getFile(`/studies/${studyId}/report`);
+  const blob = await apiClient.getFile(`/api/v1/studies/${studyId}/report`);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -116,7 +116,7 @@ export async function downloadGRRReport(studyId: string) {
  * Analyze SPC data and get control chart
  */
 export async function analyzeSPC(values: number[], chartType: string = 'xbar_r') {
-  return api.post<SPCResponse>('/spc/analyze', {
+  return apiClient.post<SPCResponse>('/api/v1/spc/analyze', {
     values,
     chart_type: chartType,
     subgroup_size: 5,
@@ -134,7 +134,7 @@ export async function interpretSPCViolations(
   lcl: number,
   recentValues: number[]
 ) {
-  return api.post<SPCInterpretResponse>('/spc/interpret', {
+  return apiClient.post<SPCInterpretResponse>('/api/v1/spc/interpret', {
     chart_type: chartType,
     violated_rules: violatedRules,
     ucl,
@@ -156,7 +156,7 @@ export async function predictSPCViolations(
   lcl: number,
   recentGrrPct?: number
 ) {
-  return api.post<PredictResponse>('/spc/predict', {
+  return apiClient.post<PredictResponse>('/api/v1/spc/predict', {
     part_number: partNumber,
     characteristic_name: characteristicName,
     values_history: valuesHistory,
@@ -178,7 +178,7 @@ export async function submitReviewDecision(
   notes: string = '',
   decidedBy: string = 'quality-engineer'
 ) {
-  return api.patch(`/reviews/${reviewId}`, {
+  return apiClient.patch(`/api/v1/reviews/${reviewId}`, {
     decision,
     notes,
     decided_by: decidedBy,
@@ -196,7 +196,7 @@ export async function chatWithAgent(
   question: string,
   conversationHistory: ChatMessage[] = []
 ) {
-  return api.post('/chat', {
+  return apiClient.post('/api/v1/chat', {
     question,
     conversation_history: conversationHistory,
   });

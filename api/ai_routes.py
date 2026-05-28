@@ -40,7 +40,7 @@ from grr.report_generator import create_pdf
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["ai"])
+router = APIRouter(prefix="/api/v1", tags=["ai"])
 
 
 # ─── Request / Response schemas ──────────────────────────────────────────────

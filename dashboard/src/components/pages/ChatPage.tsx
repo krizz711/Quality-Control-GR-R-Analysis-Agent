@@ -16,7 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { exampleChat, type ChatMessage } from "@/lib/mock-data";
-import { api } from "@/lib/api";
+import { apiClient } from "@/api/apiClient";
 import { showToast } from "@/api/apiClient";
 import { useAppStore } from "@/lib/store";
 
@@ -146,7 +146,7 @@ export default function ChatPage() {
           content: message.content,
         }));
 
-      const data = await api.post<{ answer: string; context_used: string[] }>("/chat", {
+      const data = await apiClient.post<{ answer: string; context_used: string[] }>("/api/v1/chat", {
         question: userText,
         conversation_history: history,
       });
