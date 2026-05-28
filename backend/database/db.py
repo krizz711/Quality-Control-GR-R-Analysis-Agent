@@ -85,6 +85,21 @@ def initialize_if_test_mode() -> None:
         initialize_database()
 
 
+# Rollback / compatibility guard: some dev workflows expect the legacy
+# SQLite database to be present at import time. To opt in temporarily set
+# `LEGACY_DB_ENABLED=true` in the environment. This default is off so the
+# application will not create SQLite files in production.
+if __name__ != "__main__":
+    try:
+        import os as _os
+
+        if _os.environ.get("LEGACY_DB_ENABLED", "").lower() == "true":
+            initialize_database()
+    except Exception:
+        # Best-effort; do not crash the application if initialization fails
+        pass
+
+
 def get_test_db(tmp_path):
     """Factory for test fixtures — creates isolated SQLite DB."""
     test_db = tmp_path / "test_quality.db"
