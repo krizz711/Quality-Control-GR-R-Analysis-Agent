@@ -72,7 +72,24 @@ def initialize_database(database_path: Path = DATABASE_PATH) -> Path:
     return database_path
 
 
-initialize_database()
+def initialize_if_test_mode() -> None:
+    """Initialize the on-disk SQLite DB only when running tests.
+
+    This function is intentionally not executed at module import time.
+    Tests or test fixtures can call it when they want the legacy SQLite
+    database to be created for isolated test runs.
+    """
+    import os as _os
+
+    if _os.environ.get("TEST_MODE", "").lower() == "true":
+        initialize_database()
+
+
+def get_test_db(tmp_path):
+    """Factory for test fixtures — creates isolated SQLite DB."""
+    test_db = tmp_path / "test_quality.db"
+    initialize_database(test_db)
+    return test_db
 
 
 @contextmanager

@@ -7,6 +7,7 @@ the backend service layer and reused by the rest of the application.
 from __future__ import annotations
 
 import math
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,14 @@ try:
     from scipy import stats
 except Exception:  # pragma: no cover - scipy is available in normal app installs
     stats = None
+
+
+warnings.warn(
+    "backend.services.statisticalEngine is deprecated — use the canonical 'spc' modules "
+    "(spc.control_charts, spc.nelson_rules) instead. This shim will be removed in a future "
+    "release.",
+    DeprecationWarning,
+)
 
 
 _D2: dict[int, float] = {

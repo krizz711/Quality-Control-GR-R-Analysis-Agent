@@ -15,8 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.config import settings  # noqa: E402
-
 from db.database import AsyncSessionLocal  # noqa: E402
+from agent.orchestrator import QualityOrchestrator  # noqa: E402
 
 
 TOPIC = "quality.measurements"
@@ -94,7 +94,7 @@ async def insert_measurement(message: dict[str, Any]) -> None:
             raise
 
 
-async def process_message(consumer: Consumer, kafka_message) -> bool:
+async def process_message(consumer: Consumer, kafka_message, orchestrator: QualityOrchestrator) -> bool:
     raw_payload = kafka_message.value()
 
     try:
@@ -103,9 +103,12 @@ async def process_message(consumer: Consumer, kafka_message) -> bool:
 
         await insert_measurement(message)
         consumer.commit(message=kafka_message, asynchronous=False)
+        
+        # Trigger real-time SPC/GRR analysis via orchestrator
+        await orchestrator.handle_measurement_event(message)
 
         print(
-            "Inserted: "
+            "Inserted and processed: "
             f"{message.get('part_number')} | "
             f"{message.get('characteristic_name')} | "
             f"{message.get('measured_value')}"
@@ -122,6 +125,7 @@ async def main() -> None:
     consumer = create_consumer()
     consumer.subscribe([TOPIC])
     inserted_count = 0
+    orchestrator = QualityOrchestrator()
 
     try:
         while True:
@@ -136,7 +140,7 @@ async def main() -> None:
                     logging.error("Kafka consumer error: %s", kafka_message.error())
                     continue
 
-                if await process_message(consumer, kafka_message):
+                if await process_message(consumer, kafka_message, orchestrator):
                     inserted_count += 1
             except KeyboardInterrupt:
                 raise

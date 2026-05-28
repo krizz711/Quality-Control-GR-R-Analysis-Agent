@@ -17,8 +17,22 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
 
-    # Alerts
+    # Alerts — Slack
     slack_webhook_url: str = ""
+
+    # Alerts — Email (SMTP)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_address: str = ""
+    alert_email_recipients: str = ""  # comma-separated
+
+    # Alerts — SMS (generic webhook, e.g. Twilio/Vonage)
+    sms_webhook_url: str = ""
+    sms_auth_token: str = ""
+    sms_from_number: str = ""
+    sms_to_numbers: str = ""  # comma-separated
 
     # JIRA (optional)
     jira_url: str = ""
