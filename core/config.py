@@ -64,14 +64,15 @@ class Settings(BaseSettings):
         if len(self.api_auth_key) < 32:
             raise ValueError("API_AUTH_KEY must be rotated to a strong secret in production")
 
+        # Reject mock data early when running in production mode.
+        if self.allow_mock_data:
+            raise ValueError("ALLOW_MOCK_DATA must be false in production")
+
         if not self.frontend_url.strip():
             raise ValueError("FRONTEND_URL must be configured in production")
 
         if "*" in self.cors_origin_list:
             raise ValueError("CORS_ORIGINS must not contain '*' in production")
-
-        if self.allow_mock_data:
-            raise ValueError("ALLOW_MOCK_DATA must be false in production")
 
         return self
 
