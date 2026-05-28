@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
 
+    # Auth / Rate limiting
+    jwt_secret: str = "dev-jwt-secret-change-me"
+    redis_url: str = "redis://localhost:6379/0"
+
     # Alerts — Slack
     slack_webhook_url: str = ""
 
@@ -61,12 +65,15 @@ class Settings(BaseSettings):
         if not self.is_production:
             return self
 
-        if len(self.api_auth_key) < 32:
-            raise ValueError("API_AUTH_KEY must be rotated to a strong secret in production")
-
         # Reject mock data early when running in production mode.
         if self.allow_mock_data:
             raise ValueError("ALLOW_MOCK_DATA must be false in production")
+
+        if len(self.api_auth_key) < 32:
+            raise ValueError("API_AUTH_KEY must be rotated to a strong secret in production")
+
+        if len(self.jwt_secret) < 32:
+            raise ValueError("JWT_SECRET must be rotated to a strong secret in production")
 
         if not self.frontend_url.strip():
             raise ValueError("FRONTEND_URL must be configured in production")

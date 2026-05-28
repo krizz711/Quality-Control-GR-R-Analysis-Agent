@@ -12,7 +12,6 @@ Endpoints:
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any
 import os
@@ -27,6 +26,8 @@ import pandas as pd
 import mlflow
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import RedirectResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -34,8 +35,12 @@ from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from agent.alert_engine import AlertEngine
+from api.auth import resolve_current_user, router as auth_router
+from api.rate_limit import limiter
 from core.config import settings
 from core.logging_config import setup_logging
 from db.database import AsyncSessionLocal, engine
@@ -55,6 +60,18 @@ app = FastAPI(
     version="0.1.0",
 )
 
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"error": True, "message": "Rate limit exceeded", "code": "RATE_LIMIT_EXCEEDED"},
+    )
+
+app.add_middleware(SlowAPIMiddleware)
+
 
 @app.on_event("startup")
 async def initialize_database_schema() -> None:
@@ -63,10 +80,7 @@ async def initialize_database_schema() -> None:
             await connection.run_sync(Base.metadata.create_all)
 
 _DEV_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3002", "http://localhost:3004"]
-_RATE_LIMIT_WINDOW_SECONDS = 60
-_RATE_LIMITS = {"general": 100, "ai": 10}
-_AI_RATE_LIMIT_PATHS = {"/api/grr/analyze", "/api/spc/data"}
-_rate_limit_counters: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+
 
 
 def _allowed_origins() -> list[str]:
@@ -85,29 +99,6 @@ def _client_ip(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
-
-
-def _check_rate_limit(request: Request) -> tuple[bool, str | None, int | None]:
-    if request.method == "OPTIONS" or request.url.path in AUTH_EXEMPT_PATHS:
-        return True, None, None
-
-    now = time.monotonic()
-    client_ip = _client_ip(request)
-    scopes = [("general", _RATE_LIMITS["general"])]
-    if request.url.path in _AI_RATE_LIMIT_PATHS:
-        scopes.append(("ai", _RATE_LIMITS["ai"]))
-
-    for scope, limit in scopes:
-        bucket = _rate_limit_counters[(client_ip, scope)]
-        while bucket and now - bucket[0] > _RATE_LIMIT_WINDOW_SECONDS:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False, scope, limit
-
-    for scope, _ in scopes:
-        _rate_limit_counters[(client_ip, scope)].append(now)
-
-    return True, None, None
 
 
 def _error_response(
@@ -130,63 +121,70 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from .auth import router as auth_router
+
 app.include_router(ai_router)
-app.include_router(quality_router, prefix="/api")
+app.include_router(auth_router)
+app.include_router(quality_router)
 
 
-AUTH_EXEMPT_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
+AUTH_EXEMPT_PATHS = {
+    "/health",
+    "/api/v1/health",
+    "/api/v1/auth/token",
+    "/metrics",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/api/v1/__test/limiter",
+}
+
+LEGACY_REDIRECTS = {
+    "/health": "/api/v1/health",
+    "/chat": "/api/v1/chat",
+    "/spc/analyze": "/api/v1/spc/analyze",
+    "/spc/predict": "/api/v1/spc/predict",
+    "/spc/interpret": "/api/v1/spc/interpret",
+    "/studies/grr": "/api/v1/studies/grr",
+    "/reviews": "/api/v1/reviews",
+    "/api/v1": "/api/v1/health",
+}
+
+
+def _redirect_legacy_path(path: str) -> str | None:
+    if path in LEGACY_REDIRECTS:
+        return LEGACY_REDIRECTS[path]
+    if path.startswith("/studies/") and path.count("/") == 2:
+        return f"/api/v1{path}"
+    if path.startswith("/reviews/") and path.count("/") == 2:
+        return f"/api/v1{path}"
+    if path.startswith("/spc/") and path.count("/") == 2:
+        return f"/api/v1{path}"
+    if path.startswith("/studies/") and path.endswith(("/narrative", "/report")):
+        return f"/api/v1{path}"
+    return None
 
 
 @app.middleware("http")
-async def enforce_rate_limits(request: Request, call_next):
-    allowed, scope, limit = _check_rate_limit(request)
-    if not allowed:
-        logger.warning(
-            "rate_limit_exceeded path=%s ip=%s scope=%s limit=%s",
-            request.url.path,
-            _client_ip(request),
-            scope,
-            limit,
-        )
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "error": True,
-                "message": "Rate limit exceeded",
-                "code": "RATE_LIMIT_EXCEEDED",
-            },
-        )
+async def enforce_authentication(request: Request, call_next):
+    redirect_target = _redirect_legacy_path(request.url.path)
+    if redirect_target is not None:
+        return RedirectResponse(url=redirect_target, status_code=status.HTTP_308_PERMANENT_REDIRECT)
 
-    return await call_next(request)
-
-
-@app.middleware("http")
-async def enforce_api_key(request: Request, call_next):
-    # Allow preflight and auth-exempt paths through
     if request.method == "OPTIONS" or request.url.path in AUTH_EXEMPT_PATHS:
         return await call_next(request)
 
-    # In local development allow requests coming from configured dev origins
-    origin = request.headers.get("origin")
-    if not settings.is_production and origin and origin in _allowed_origins():
-        return await call_next(request)
+    try:
+        user = await resolve_current_user(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
-    # Otherwise require a valid x-api-key header
-    if request.headers.get("x-api-key") != settings.api_auth_key:
-        # Ensure CORS headers are present on the error response so browsers don't
-        # hide the real error behind a CORS failure. Mirror the Origin header
-        # when it's allowed, otherwise use the first allowed origin.
-        allowed = _allowed_origins()
-        ac_origin = origin if origin and origin in allowed else (allowed[0] if allowed else "*")
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN,
-            content={"detail": "Could not validate API key"},
-            headers={
-                "Access-Control-Allow-Origin": ac_origin,
-                "Access-Control-Allow-Credentials": "true",
-            },
-        )
+    if user is None:
+        # Return 403 for missing authentication on protected business endpoints
+        # to match historical behavior and test expectations.
+        return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Missing authentication"})
 
+    request.state.user = user
     return await call_next(request)
 
 
@@ -246,6 +244,37 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         code="INTERNAL_ERROR",
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+    }
+
+    public_paths = {"/api/v1/health", "/api/v1/auth/token", "/metrics", "/docs", "/openapi.json", "/redoc"}
+    for path, methods in schema.get("paths", {}).items():
+        if path in public_paths:
+            continue
+        for operation in methods.values():
+            if isinstance(operation, dict):
+                operation.setdefault("security", [{"BearerAuth": []}])
+
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
 
 
 # Counter: total GRR studies run, labelled by acceptance level
@@ -359,7 +388,7 @@ class ReviewQueueResponse(BaseModel):
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
-@app.get("/health", response_model=HealthResponse, tags=["system"])
+@app.get("/api/v1/health", response_model=HealthResponse, tags=["system"])
 async def health_check() -> HealthResponse:
     """Return service health status."""
     overall = "ok"
@@ -404,7 +433,7 @@ async def health_check() -> HealthResponse:
 
 
 @app.post(
-    "/studies/grr",
+    "/api/v1/studies/grr",
     response_model=GRRStudyResponse,
     status_code=status.HTTP_201_CREATED,
     tags=["grr"],
@@ -527,7 +556,7 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
         )
 
 
-@app.get("/studies/{study_id}", response_model=GRRStudyResponse, tags=["grr"])
+@app.get("/api/v1/studies/{study_id}", response_model=GRRStudyResponse, tags=["grr"])
 async def get_study(study_id: str) -> GRRStudyResponse:
     """
     Retrieve results for a previously submitted GR&R study.
@@ -561,7 +590,7 @@ async def get_study(study_id: str) -> GRRStudyResponse:
         )
 
 
-@app.post("/spc/analyze", response_model=SPCResponse, tags=["spc"])
+@app.post("/api/v1/spc/analyze", response_model=SPCResponse, tags=["spc"])
 async def analyze_spc(body: SPCRequest) -> SPCResponse:
     """
     Run SPC control chart analysis and Nelson rule evaluation.
@@ -664,7 +693,7 @@ async def analyze_spc(body: SPCRequest) -> SPCResponse:
         )
 
 
-@app.get("/reviews", response_model=list[ReviewQueueResponse], tags=["reviews"])
+@app.get("/api/v1/reviews", response_model=list[ReviewQueueResponse], tags=["reviews"])
 async def list_pending_reviews() -> list[ReviewQueueResponse]:
     """Returns all pending review_queue rows for the quality engineer dashboard."""
     async with AsyncSessionLocal() as session:
@@ -683,7 +712,7 @@ async def list_pending_reviews() -> list[ReviewQueueResponse]:
         return [ReviewQueueResponse.model_validate(row) for row in rows]
 
 
-@app.patch("/reviews/{review_id}", tags=["reviews"])
+@app.patch("/api/v1/reviews/{review_id}", tags=["reviews"])
 async def decide_review(review_id: str, body: ReviewDecision) -> dict[str, Any]:
     """
     Quality engineer approves or rejects a CONDITIONAL GR&R study.

@@ -143,6 +143,16 @@ class NotificationDelivery(Base):
     )
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String(128), unique=True)
+    hashed_password: Mapped[str] = mapped_column(String(256))
+    role: Mapped[str] = mapped_column(String(32), default="quality_engineer")
+    created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+
+
 __all__ = [
     "Alert",
     "AlertFeedback",
@@ -153,4 +163,5 @@ __all__ = [
     "NotificationDelivery",
     "QualityViolation",
     "ReviewQueue",
+    "User",
 ]

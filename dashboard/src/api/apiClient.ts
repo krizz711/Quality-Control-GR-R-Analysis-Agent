@@ -10,6 +10,12 @@ export interface BackendErrorResponse {
   detail?: string;
 }
 
+export interface ApiError {
+  message: string;
+  code?: string;
+  detail?: string;
+}
+
 export interface GRRInputMeasurement {
   operator: string;
   part: number;
@@ -278,40 +284,70 @@ export const apiClient = {
   delete<T>(url: string, config?: AxiosRequestConfig) {
     return request<T>({ ...config, method: "DELETE", url });
   },
+  async getFile(path: string, timeout?: number): Promise<Blob> {
+    const API_URL =
+      typeof window !== "undefined"
+        ? (window as any).NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000"
+        : process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+    const API_KEY =
+      typeof window !== "undefined"
+        ? (window as any).NEXT_PUBLIC_API_KEY || ""
+        : process.env.NEXT_PUBLIC_API_KEY || "";
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout || 30000);
+    try {
+      const response = await fetch(`${API_URL}${path}`, {
+        method: "GET",
+        signal: controller.signal,
+        headers: {
+          "X-API-Key": API_KEY,
+        },
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw { message: `Failed to fetch ${path}`, detail: text } as ApiError;
+      }
+      return await response.blob();
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  },
 };
 
 // GR&R
 export const submitGRRAnalysis = (data: GRRInput) =>
-  apiClient.post<GRRAnalysisResponse>("/api/grr/analyze", data);
+  apiClient.post<GRRAnalysisResponse>("/api/v1/grr/analyze", data);
 
-export const getGRRHistory = () => apiClient.get<GRRHistoryItem[]>("/api/grr/history");
+export const getGRRHistory = () => apiClient.get<GRRHistoryItem[]>("/api/v1/grr/history");
 
 // SPC
 export const submitSPCData = (data: SPCInput) =>
-  apiClient.post<SPCDataResponse>("/api/spc/data", data);
+  apiClient.post<SPCDataResponse>("/api/v1/spc/data", data);
 
 export const getSPCHistory = (processName: string) =>
-  apiClient.get<SPCHistoryResponse>(`/api/spc/history/${encodeURIComponent(processName)}`);
+  apiClient.get<SPCHistoryResponse>(`/api/v1/spc/history/${encodeURIComponent(processName)}`);
 
 // Dashboard
 export const getDashboardSummary = () =>
-  apiClient.get<DashboardSummaryResponse>("/api/dashboard/summary");
+  apiClient.get<DashboardSummaryResponse>("/api/v1/dashboard/summary");
 
 // Alerts
 export const getAlerts = (params?: AlertFilters) =>
-  apiClient.get<AlertListResponse>("/api/alerts", { params });
+  apiClient.get<AlertListResponse>("/api/v1/alerts", { params });
 
 export const resolveAlert = (id: string | number) =>
-  apiClient.put<AlertResolveResponse>(`/api/alerts/${id}/resolve`);
+  apiClient.put<AlertResolveResponse>(`/api/v1/alerts/${id}/resolve`);
 
 export const recordAlertFeedback = (id: string | number, data: AlertFeedbackInput) =>
-  apiClient.post<AlertFeedbackResponse>(`/api/alerts/${id}/feedback`, data);
+  apiClient.post<AlertFeedbackResponse>(`/api/v1/alerts/${id}/feedback`, data);
 
 export const getAlertAccuracy = () =>
-  apiClient.get<AlertAccuracyResponse>("/api/alerts/accuracy");
+  apiClient.get<AlertAccuracyResponse>("/api/v1/alerts/accuracy");
 
 // Audit Log
-export const getAuditLog = () => apiClient.get<AuditLogItem[]>("/api/audit-log");
+export const getAuditLog = () => apiClient.get<AuditLogItem[]>("/api/v1/audit-log");
 
 export function useApi<T>(apiCall: () => Promise<T>, deps: unknown[] = []): UseApiState<T> {
   const [data, setData] = useState<T | null>(null);

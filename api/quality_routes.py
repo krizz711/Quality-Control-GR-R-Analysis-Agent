@@ -11,12 +11,13 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Request, status, Depends, Body
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from agent.alerts import create_jira_ticket, send_email_alert, send_slack_alert, send_sms_alert
 from backend.services import gemini_service as geminiService
+from api.rate_limit import limiter
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import Alert, AlertFeedback, AuditLog, GrrStudy, Measurement, NotificationDelivery
@@ -25,7 +26,31 @@ from grr.calculator import grr_anova, grr_xbar_r
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["quality-api"])
+router = APIRouter(prefix="/api/v1", tags=["quality-api"])
+
+
+@router.get("/__test/limiter")
+@limiter.limit("2/minute")
+async def _test_limiter(request: Request) -> dict:
+    return {"ok": True}
+
+# RBAC dependency (lazy import to avoid hard dependency at module import time)
+def require_role(role: str):
+    from fastapi import Depends
+    from .auth import get_current_user
+
+    def _dep(user=Depends(get_current_user)):
+        if not user:
+            from fastapi import HTTPException, status
+
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication")
+        if role and user.get("role") != role:
+            from fastapi import HTTPException, status
+
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+        return user
+
+    return _dep
 
 
 class GRRMeasurementInput(BaseModel):
@@ -523,12 +548,17 @@ async def _create_quality_alert(
     return alert_id
 
 
+@limiter.limit("10/minute")
 @router.post(
     "/grr/analyze",
     response_model=GRRAnalyzeResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def analyze_grr(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
+async def analyze_grr(request: Request, payload: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
+    return await _analyze_grr_impl(payload)
+
+
+async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
     started = time.monotonic()
     try:
         df = pd.DataFrame([item.model_dump() for item in body.measurements])
@@ -659,8 +689,19 @@ async def get_grr_history() -> list[GRRHistoryItem]:
     return history
 
 
+@limiter.limit("20/minute")
 @router.post("/spc/data", response_model=SPCDataResponse, status_code=status.HTTP_201_CREATED)
-async def analyze_spc_data(body: SPCDataRequest) -> SPCDataResponse:
+async def analyze_spc_data(request: Request, body: SPCDataRequest = Body(...)) -> SPCDataResponse:
+    """Endpoint wrapper that delegates to the implementation.
+
+    The limiter decorator expects the endpoint to receive a Starlette `Request`.
+    Internal callers should call `_analyze_spc_data_impl` directly to avoid
+    the rate-limit wrapper which requires a real `Request` instance.
+    """
+    return await _analyze_spc_data_impl(body)
+
+
+async def _analyze_spc_data_impl(body: SPCDataRequest) -> SPCDataResponse:
     started = time.monotonic()
     try:
         values = [float(value) for value in body.measurements]
@@ -861,7 +902,7 @@ async def receive_mes_measurement_event(body: MESMeasurementEvent) -> MESMeasure
         )
         await session.commit()
 
-    analysis = await analyze_spc_data(
+    analysis = await _analyze_spc_data_impl(
         SPCDataRequest(
             process_name=body.process_name,
             measurements=body.measurements,
@@ -987,7 +1028,7 @@ async def list_alerts(
 
 
 @router.put("/alerts/{alert_id}/resolve", response_model=AlertResolveResponse)
-async def resolve_alert(alert_id: str) -> AlertResolveResponse:
+async def resolve_alert(alert_id: str, _user=Depends(require_role("admin"))) -> AlertResolveResponse:
     uuid_id, hex_id = _stored_alert_lookup_values(alert_id)
 
     resolved_at = _now()
