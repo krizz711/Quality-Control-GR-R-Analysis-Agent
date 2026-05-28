@@ -110,10 +110,15 @@ services:
       retries: 5
     networks:
       - arad-network
+    command: ["sh", "-c", "alembic -c /app/alembic.ini upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
 
   consumer:
     image: arad-quality-agent-api:0.1.0
     depends_on:
+      timescaledb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
       api:
         condition: service_healthy
     command: ["python", "-m", "agent.consumer"]

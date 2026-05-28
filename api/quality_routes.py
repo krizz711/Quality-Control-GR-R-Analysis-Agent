@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
-from agent.alerts import create_jira_ticket, send_slack_alert
+from agent.alerts import create_jira_ticket, send_email_alert, send_slack_alert, send_sms_alert
 from backend.services import gemini_service as geminiService
 from core.config import settings
 from db.database import AsyncSessionLocal
@@ -367,6 +367,7 @@ async def _dispatch_alert_notifications(
     message: str,
     process_name: str,
 ) -> None:
+    # ── Slack ──
     slack_status = "skipped"
     slack_error = None
     try:
@@ -386,6 +387,66 @@ async def _dispatch_alert_notifications(
         )
     )
 
+    # ── Email ──
+    email_status = "skipped"
+    email_error = None
+    recipients = [r.strip() for r in settings.alert_email_recipients.split(",") if r.strip()]
+    if settings.smtp_host and recipients:
+        try:
+            email_sent = await send_email_alert(
+                smtp_host=settings.smtp_host,
+                smtp_port=settings.smtp_port,
+                smtp_user=settings.smtp_user,
+                smtp_password=settings.smtp_password,
+                from_address=settings.smtp_from_address or f"quality-agent@{settings.smtp_host}",
+                recipients=recipients,
+                subject=f"Quality Alert [{severity.upper()}]: {process_name}",
+                body=message,
+            )
+            email_status = "sent" if email_sent else "skipped"
+        except Exception as exc:
+            email_status = "failed"
+            email_error = str(exc)
+
+    session.add(
+        NotificationDelivery(
+            alert_id=alert_id,
+            channel="email",
+            status=email_status,
+            recipient=", ".join(recipients) if recipients else None,
+            error_message=email_error,
+        )
+    )
+
+    # ── SMS ──
+    sms_status = "skipped"
+    sms_error = None
+    sms_numbers = [n.strip() for n in settings.sms_to_numbers.split(",") if n.strip()]
+    if settings.sms_webhook_url and sms_numbers and severity in ("critical", "high"):
+        try:
+            sms_sent = await send_sms_alert(
+                webhook_url=settings.sms_webhook_url,
+                auth_token=settings.sms_auth_token,
+                from_number=settings.sms_from_number,
+                to_numbers=sms_numbers,
+                message=f"[{severity.upper()}] {process_name}: {message[:120]}",
+            )
+            sms_status = "sent" if sms_sent else "skipped"
+        except Exception as exc:
+            sms_status = "failed"
+            sms_error = str(exc)
+
+    session.add(
+        NotificationDelivery(
+            alert_id=alert_id,
+            channel="sms",
+            status=sms_status,
+            recipient=", ".join(sms_numbers) if sms_numbers else None,
+            error_message=sms_error,
+        )
+    )
+
+    # ── JIRA (critical only) ──
     if severity == "critical":
         jira_status = "skipped"
         jira_error = None
@@ -1080,3 +1141,259 @@ async def get_audit_log() -> list[AuditLogResponse]:
         )
 
     return audit_items
+
+
+@router.get("/audit-log/export")
+async def export_audit_log_csv(
+    format: Literal["csv", "json"] = Query(default="csv"),
+):
+    """Export audit log in compliance-ready format (CSV or JSON)."""
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT id, created_at, actor, action, entity_type, entity_id, details
+                FROM audit_logs
+                ORDER BY created_at DESC
+                LIMIT 10000
+                """
+            )
+        )
+        rows = result.mappings().all()
+
+    if format == "json":
+        items = []
+        for row in rows:
+            details = row.get("details")
+            if isinstance(details, str):
+                try:
+                    details = json.loads(details)
+                except json.JSONDecodeError:
+                    details = {"raw": details}
+            items.append({
+                "id": str(row["id"]),
+                "timestamp": str(row["created_at"]),
+                "actor": row["actor"],
+                "action": row["action"],
+                "entity_type": row["entity_type"],
+                "entity_id": row["entity_id"],
+                "details": details,
+            })
+        return JSONResponse(content={"audit_log": items, "total": len(items)})
+
+    # CSV format
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "timestamp", "actor", "action", "entity_type", "entity_id", "details"])
+    for row in rows:
+        details = row.get("details")
+        if isinstance(details, dict):
+            details = json.dumps(details)
+        elif isinstance(details, str):
+            pass
+        else:
+            details = str(details) if details else ""
+        writer.writerow([
+            str(row["id"]),
+            str(row["created_at"]),
+            row["actor"],
+            row["action"],
+            row["entity_type"],
+            row["entity_id"],
+            details,
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="audit_log.csv"'},
+    )
+
+
+class CapabilityRequest(BaseModel):
+    values: list[float] = Field(..., min_length=2)
+    usl: float
+    lsl: float
+    subgroup_size: int = Field(1, ge=1)
+    process_name: str = "unknown"
+
+
+class CapabilityResponse(BaseModel):
+    cp: float
+    cpk: float
+    pp: float
+    ppk: float
+    cpu: float
+    cpl: float
+    mean: float
+    sigma_within: float
+    sigma_overall: float
+    ppm_total: float
+    ai_analysis: str = ""
+
+
+@router.post("/spc/capability", response_model=CapabilityResponse, status_code=status.HTTP_201_CREATED)
+async def analyze_capability(body: CapabilityRequest) -> CapabilityResponse:
+    """Calculate Cpk/Ppk process capability indices."""
+    from spc.capability import capability_indices
+
+    try:
+        result = capability_indices(
+            values=body.values,
+            usl=body.usl,
+            lsl=body.lsl,
+            subgroup_size=body.subgroup_size,
+        )
+
+        ai_analysis = ""
+        try:
+            ai_analysis = await geminiService.analyzeSPCAnomaly({
+                "analysis_type": "capability_study",
+                "process_name": body.process_name,
+                "cp": result.cp,
+                "cpk": result.cpk,
+                "pp": result.pp,
+                "ppk": result.ppk,
+                "ppm_total": result.ppm_total,
+                "mean": result.mean,
+                "usl": body.usl,
+                "lsl": body.lsl,
+            })
+        except Exception:
+            logger.warning("AI analysis unavailable for capability study")
+
+        async with AsyncSessionLocal() as session:
+            await _audit(
+                session,
+                actor="system",
+                action="spc_capability_analysis",
+                entity_type="spc_process",
+                entity_id=body.process_name,
+                details={
+                    "cp": result.cp,
+                    "cpk": result.cpk,
+                    "pp": result.pp,
+                    "ppk": result.ppk,
+                    "ppm_total": result.ppm_total,
+                },
+            )
+            await session.commit()
+
+        return CapabilityResponse(
+            cp=result.cp,
+            cpk=result.cpk,
+            pp=result.pp,
+            ppk=result.ppk,
+            cpu=result.cpu,
+            cpl=result.cpl,
+            mean=result.mean,
+            sigma_within=result.sigma_within,
+            sigma_overall=result.sigma_overall,
+            ppm_total=result.ppm_total,
+            ai_analysis=ai_analysis,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+class AnomalyDetectionRequest(BaseModel):
+    values: list[float] = Field(..., min_length=5)
+    cl: float
+    sigma: float
+    ucl: float
+    lcl: float
+    process_name: str = "unknown"
+
+
+class AnomalyDetectionResponse(BaseModel):
+    anomaly_detected: bool
+    anomaly_score: float
+    anomaly_indices: list[int]
+    drift_detected: bool
+    drift_direction: str
+    drift_rate: float
+    predicted_violation_in: int | None
+    method: str
+    details: dict[str, Any]
+
+
+@router.post("/spc/anomaly-detect", response_model=AnomalyDetectionResponse, status_code=status.HTTP_201_CREATED)
+async def detect_anomalies_endpoint(body: AnomalyDetectionRequest) -> AnomalyDetectionResponse:
+    """Run statistical anomaly detection (EWMA + IQR + trend analysis)."""
+    from spc.anomaly_detector import detect_anomalies
+
+    result = detect_anomalies(
+        values=body.values,
+        cl=body.cl,
+        sigma=body.sigma,
+        ucl=body.ucl,
+        lcl=body.lcl,
+    )
+
+    # Log to MLflow
+    try:
+        import mlflow
+        mlflow.set_experiment("anomaly_detection")
+        with mlflow.start_run(run_name=f"anomaly_{body.process_name}"):
+            mlflow.log_metrics({
+                "anomaly_score": result.anomaly_score,
+                "drift_rate": result.drift_rate,
+                "ewma_violations": result.details.get("ewma_violations", 0),
+                "iqr_outliers": result.details.get("iqr_outliers", 0),
+            })
+            mlflow.set_tag("process_name", body.process_name)
+            mlflow.set_tag("anomaly_detected", str(result.anomaly_detected))
+    except Exception:
+        logger.warning("MLflow logging failed for anomaly detection")
+
+    async with AsyncSessionLocal() as session:
+        await _audit(
+            session,
+            actor="system",
+            action="anomaly_detection",
+            entity_type="spc_process",
+            entity_id=body.process_name,
+            details={
+                "anomaly_detected": result.anomaly_detected,
+                "anomaly_score": result.anomaly_score,
+                "drift_direction": result.drift_direction,
+            },
+        )
+
+        if result.anomaly_detected and result.anomaly_score > 0.5:
+            await _create_quality_alert(
+                session,
+                alert_type="trend_detected",
+                severity="high" if result.anomaly_score > 0.7 else "medium",
+                message=(
+                    f"Statistical anomaly detected in {body.process_name}: "
+                    f"score={result.anomaly_score:.2f}, drift={result.drift_direction}"
+                ),
+                process_name=body.process_name,
+                payload={
+                    "source": "anomaly_detector",
+                    "anomaly_score": result.anomaly_score,
+                    "drift_direction": result.drift_direction,
+                    "predicted_violation_in": result.predicted_violation_in,
+                },
+                timestamp=_now(),
+            )
+
+        await session.commit()
+
+    return AnomalyDetectionResponse(
+        anomaly_detected=result.anomaly_detected,
+        anomaly_score=result.anomaly_score,
+        anomaly_indices=result.anomaly_indices,
+        drift_detected=result.drift_detected,
+        drift_direction=result.drift_direction,
+        drift_rate=result.drift_rate,
+        predicted_violation_in=result.predicted_violation_in,
+        method=result.method,
+        details=result.details,
+    )

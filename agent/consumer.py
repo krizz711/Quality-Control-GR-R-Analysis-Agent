@@ -2,11 +2,13 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from confluent_kafka import Consumer
+from confluent_kafka.admin import AdminClient
 from sqlalchemy import text
 
 
@@ -15,11 +17,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.config import settings  # noqa: E402
-
 from db.database import AsyncSessionLocal  # noqa: E402
+from agent.orchestrator import QualityOrchestrator  # noqa: E402
 
 
 TOPIC = "quality.measurements"
+TOPIC_WAIT_TIMEOUT_SECONDS = 60
+TOPIC_WAIT_POLL_SECONDS = 2
 
 INSERT_MEASUREMENT_SQL = text(
     """
@@ -62,6 +66,24 @@ def create_consumer() -> Consumer:
     )
 
 
+def wait_for_topic(topic: str, *, timeout_seconds: int = TOPIC_WAIT_TIMEOUT_SECONDS) -> None:
+    """Block until Kafka exposes the topic metadata for the consumer."""
+    admin_client = AdminClient({"bootstrap.servers": settings.kafka_bootstrap_servers})
+    deadline = time.monotonic() + timeout_seconds
+
+    while True:
+        metadata = admin_client.list_topics(topic=topic, timeout=5)
+        if topic in metadata.topics and not metadata.topics[topic].error:
+            logging.info("Kafka topic ready: %s", topic)
+            return
+
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Timed out waiting for Kafka topic: {topic}")
+
+        logging.info("Waiting for Kafka topic to become ready: %s", topic)
+        time.sleep(TOPIC_WAIT_POLL_SECONDS)
+
+
 def parse_timestamp(value: Any) -> datetime | Any:
     if not isinstance(value, str):
         return value
@@ -94,7 +116,7 @@ async def insert_measurement(message: dict[str, Any]) -> None:
             raise
 
 
-async def process_message(consumer: Consumer, kafka_message) -> bool:
+async def process_message(consumer: Consumer, kafka_message, orchestrator: QualityOrchestrator) -> bool:
     raw_payload = kafka_message.value()
 
     try:
@@ -103,9 +125,12 @@ async def process_message(consumer: Consumer, kafka_message) -> bool:
 
         await insert_measurement(message)
         consumer.commit(message=kafka_message, asynchronous=False)
+        
+        # Trigger real-time SPC/GRR analysis via orchestrator
+        await orchestrator.handle_measurement_event(message)
 
         print(
-            "Inserted: "
+            "Inserted and processed: "
             f"{message.get('part_number')} | "
             f"{message.get('characteristic_name')} | "
             f"{message.get('measured_value')}"
@@ -119,9 +144,11 @@ async def process_message(consumer: Consumer, kafka_message) -> bool:
 async def main() -> None:
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(message)s")
 
+    wait_for_topic(TOPIC)
     consumer = create_consumer()
     consumer.subscribe([TOPIC])
     inserted_count = 0
+    orchestrator = QualityOrchestrator()
 
     try:
         while True:
@@ -136,7 +163,7 @@ async def main() -> None:
                     logging.error("Kafka consumer error: %s", kafka_message.error())
                     continue
 
-                if await process_message(consumer, kafka_message):
+                if await process_message(consumer, kafka_message, orchestrator):
                     inserted_count += 1
             except KeyboardInterrupt:
                 raise

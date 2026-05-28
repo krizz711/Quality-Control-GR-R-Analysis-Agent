@@ -17,14 +17,25 @@ import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+# Lazy-initialized Gemini model. Do not crash on import when GEMINI_API_KEY is
+# absent — initialize at call time to allow running the API without AI keys.
+_model = None
 MODEL_NAME = "gemini-1.5-flash"
 
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
-genai.configure(api_key=GEMINI_API_KEY)
-_model = genai.GenerativeModel(MODEL_NAME)
+
+def _ensure_model() -> None:
+    """Ensure the global _model is configured. Raises ValueError if key missing."""
+    global _model
+    if _model is not None:
+        return
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY is not set; Gemini calls are disabled")
+    genai.configure(api_key=api_key)
+    _model = genai.GenerativeModel(MODEL_NAME)
 
 _T = TypeVar("_T")
 
@@ -48,11 +59,15 @@ async def _generate_text(prompt: str) -> str:
     logger.info("Calling Gemini model %s", MODEL_NAME)
 
     try:
+        _ensure_model()
         response = await asyncio.to_thread(_model.generate_content, prompt)
         text = getattr(response, "text", None)
         if not text:
             raise ValueError("Gemini returned an empty response")
         return text
+    except ValueError:
+        # Propagate missing-key error to caller for explicit handling in tests
+        raise
     except Exception as exc:
         logger.exception("Gemini call failed")
         return f"Error calling Gemini: {exc}"
