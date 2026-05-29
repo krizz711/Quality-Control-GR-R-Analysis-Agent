@@ -25,6 +25,7 @@ from sqlalchemy import text
 
 from agent.alert_engine import AlertEngine
 from agent.alerts import send_slack_alert
+from api.realtime import publish_realtime_event
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import QualityViolation
@@ -213,6 +214,20 @@ class QualityOrchestrator:
 
         await self.alert_engine.process_pending_violations()
 
+        await publish_realtime_event(
+            {
+                "type": "spc.analysis",
+                "part_number": event.get("part_number"),
+                "characteristic_name": event.get("characteristic_name"),
+                "measured_value": event.get("measured_value"),
+                "values_used": len(values),
+                "rule_1_violations": len(rule1),
+                "total_violations": sum(len(v) for v in violations.values()),
+                "timestamp": event.get("timestamp"),
+                "source_event_id": event.get("event_id") or event.get("source_event_id"),
+            }
+        )
+
         return {
             "status": "processed",
             "study_type": "spc",
@@ -291,6 +306,19 @@ class QualityOrchestrator:
                 )
 
             await session.commit()
+
+        await publish_realtime_event(
+            {
+                "type": "grr.analysis",
+                "study_id": study_id,
+                "equipment_id": event.get("equipment_id", "unknown"),
+                "characteristic_name": event.get("characteristic_name", "unknown"),
+                "grr_percent": result.total_grr,
+                "acceptance": verdict.level.value,
+                "requires_human_review": verdict.requires_human_review,
+                "source_event_id": event.get("event_id") or event.get("source_event_id"),
+            }
+        )
 
         mlflow.set_experiment("grr_studies")
         with mlflow.start_run(run_name=study_id):

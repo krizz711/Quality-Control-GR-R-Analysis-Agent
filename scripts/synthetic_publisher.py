@@ -2,6 +2,7 @@ import argparse
 import random
 import sys
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from schemas.measurement import MeasurementEvent  # noqa: E402
 
 TOPIC = "quality.measurements"
 EVENTS_TOPIC = "quality.events"
+DLQ_TOPIC = "quality.measurements.dlq"
 
 
 # ─── Topic provisioning ───────────────────────────────────────────────────────
@@ -29,7 +31,7 @@ def ensure_topics(bootstrap_servers: str) -> None:
     existing = set(admin.list_topics(timeout=10).topics.keys())
 
     to_create = []
-    for topic_name in (TOPIC, EVENTS_TOPIC):
+    for topic_name in (TOPIC, EVENTS_TOPIC, DLQ_TOPIC):
         if topic_name not in existing:
             to_create.append(NewTopic(topic_name, num_partitions=1, replication_factor=1))
 
@@ -54,25 +56,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--delay-ms", type=int, default=100)
     parser.add_argument("--bootstrap-servers", default=settings.kafka_bootstrap_servers)
+    parser.add_argument("--equipment-id", default="CMM-001")
     return parser.parse_args()
 
 
 # ─── Record builder ───────────────────────────────────────────────────────────
 
-def build_event(index: int) -> MeasurementEvent:
+def build_event(index: int, equipment_id: str) -> MeasurementEvent:
     """Build and validate a MeasurementEvent; raises ValidationError if invalid."""
     measured_value = 25.25 if index % 200 == 0 else round(random.normalvariate(25.0, 0.03), 4)
 
     return MeasurementEvent(
         timestamp=datetime.now(UTC),
-        part_number=f"PART-{(index % 20) + 1:03d}",
+        part_number=f"PART-{index:06d}",
         characteristic_name="diameter",
         nominal_value=25.0,
         measured_value=measured_value,
         unit="mm",
         operator_id=f"OP-{(index % 5) + 1:03d}",
-        equipment_id="CMM-001",
+        equipment_id=equipment_id,
         shift=["A", "B", "C"][index % 3],
+        event_id=uuid.uuid4().hex,
     )
 
 
@@ -95,7 +99,7 @@ def main() -> None:
     start_time = time.perf_counter()
 
     for index in range(1, args.count + 1):
-        event = build_event(index)  # ValidationError raised here if invalid
+        event = build_event(index, args.equipment_id)  # ValidationError raised here if invalid
         producer.produce(
             TOPIC,
             key=event.part_number,

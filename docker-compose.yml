@@ -91,6 +91,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-arad-quality-agent-test-consumer}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
@@ -115,6 +116,8 @@ services:
 
   consumer:
     image: arad-quality-agent-api:0.1.0
+    profiles:
+      - legacy-consumer
     depends_on:
       timescaledb:
         condition: service_healthy

@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     # Kafka
     kafka_bootstrap_servers: str = "localhost:9092"
+    measurements_topic: str = "measurements.test"
+    measurements_dlq_topic: str = "measurements.test.dlq"
 
     # MLflow
     mlflow_tracking_uri: str = "http://localhost:5000"

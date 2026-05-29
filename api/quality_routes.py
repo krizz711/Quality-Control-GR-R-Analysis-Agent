@@ -11,13 +11,14 @@ from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query, Request, status, Depends, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from agent.alerts import create_jira_ticket, send_email_alert, send_slack_alert, send_sms_alert
 from backend.services import gemini_service as geminiService
 from api.rate_limit import limiter
+from api.realtime import publish_realtime_event, state as realtime_state
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import Alert, AlertFeedback, AuditLog, GrrStudy, Measurement, NotificationDelivery
@@ -27,6 +28,29 @@ from grr.calculator import grr_anova, grr_xbar_r
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["quality-api"])
+
+
+@router.websocket("/ws/measurements")
+async def websocket_measurements(websocket: WebSocket) -> None:
+    await realtime_state.manager.connect(websocket)
+    try:
+        while True:
+            try:
+                message = await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                break
+
+            try:
+                payload = json.loads(message)
+            except Exception:
+                continue
+
+            if payload.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": _now().isoformat()})
+    finally:
+        await realtime_state.manager.disconnect(websocket)
 
 
 @router.get("/__test/limiter")
@@ -545,6 +569,17 @@ async def _create_quality_alert(
         message=message,
         process_name=process_name,
     )
+    await publish_realtime_event(
+        {
+            "type": "alert.created",
+            "alert_id": str(alert_id),
+            "alert_type": alert_type,
+            "severity": severity,
+            "message": message,
+            "process_name": process_name,
+            "payload": payload,
+        }
+    )
     return alert_id
 
 
@@ -642,6 +677,19 @@ async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
             )
             await session.commit()
 
+        await publish_realtime_event(
+            {
+                "type": "grr.analysis",
+                "study_id": str(study_id),
+                "grr_percent": result.total_grr,
+                "repeatability": result.repeatability,
+                "reproducibility": result.reproducibility,
+                "ndc": result.ndc,
+                "verdict": verdict.level.value,
+                "timestamp": timestamp.isoformat(),
+            }
+        )
+
         return GRRAnalyzeResponse(
             grr_percent=result.total_grr,
             repeatability=result.repeatability,
@@ -650,6 +698,8 @@ async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
             ai_analysis=ai_analysis,
             timestamp=timestamp,
         )
+
+        
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except Exception as exc:
@@ -790,6 +840,19 @@ async def _analyze_spc_data_impl(body: SPCDataRequest) -> SPCDataResponse:
             )
             await session.commit()
 
+        await publish_realtime_event(
+            {
+                "type": "spc.analysis",
+                "process_name": body.process_name,
+                "mean": mean_value,
+                "std_dev": std_dev,
+                "ucl": ucl,
+                "lcl": lcl,
+                "violations": [violation.model_dump() for violation in violations],
+                "timestamp": timestamp.isoformat(),
+            }
+        )
+
         return SPCDataResponse(
             mean=mean_value,
             std_dev=std_dev,
@@ -859,6 +922,17 @@ async def receive_qms_inspection_equipment_event(
         )
         await session.commit()
 
+    await publish_realtime_event(
+        {
+            "type": "qms.event",
+            "event_id": event_id,
+            "equipment_id": body.equipment_id,
+            "measurement_count": len(body.measurements),
+            "source_system": body.source_system,
+            "timestamp": timestamp.isoformat(),
+        }
+    )
+
     if not body.measurements:
         return QMSInspectionEquipmentResponse(
             event_id=event_id,
@@ -901,6 +975,17 @@ async def receive_mes_measurement_event(body: MESMeasurementEvent) -> MESMeasure
             },
         )
         await session.commit()
+
+    await publish_realtime_event(
+        {
+            "type": "mes.event",
+            "event_id": event_id,
+            "process_name": body.process_name,
+            "measurement_count": len(body.measurements),
+            "source_system": body.source_system,
+            "timestamp": timestamp.isoformat(),
+        }
+    )
 
     analysis = await _analyze_spc_data_impl(
         SPCDataRequest(
