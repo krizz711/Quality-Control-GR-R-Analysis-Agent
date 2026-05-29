@@ -1,3 +1,11 @@
+---
+name: Integration Tests
+
+on:
+  push:
+    branches: [main, stabilize/architecture, "phase-*"]
+  pull_request:
+    branches: [main]
 name: Integration Tests
 
 on:
@@ -26,12 +34,13 @@ jobs:
           KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
           KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
           KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-        options: >-
-          --health-cmd "kafka-broker-api-versions.sh --bootstrap-server kafka:9092"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 30s
+          options: >-
+            --health-cmd "kafka-broker-api-versions.sh\
+              --bootstrap-server kafka:9092"
+            --health-interval 10s
+            --health-timeout 5s
+            --health-retries 10
+            --health-start-period 30s
 
       timescaledb:
         image: timescale/timescaledb:latest-pg15
@@ -53,7 +62,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
+            # cache: pip  # Removed cache key
 
       - name: Install dependencies
         run: pip install -r requirements.txt pytest pytest-asyncio
@@ -65,7 +74,8 @@ jobs:
 
       - name: Create Kafka test topic
         run: |
-          docker exec $(docker ps -qf "ancestor=confluentinc/cp-kafka:7.4.0") \
+          docker exec $(docker ps -qf \
+            "ancestor=confluentinc/cp-kafka:7.4.0") \
             kafka-topics.sh \
             --bootstrap-server kafka:9092 \
             --create --if-not-exists \
