@@ -1,0 +1,94 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main, stabilize/architecture, "phase-*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      zookeeper:
+        image: confluentinc/cp-zookeeper:7.4.0
+        env:
+          ZOOKEEPER_CLIENT_PORT: 2181
+          ZOOKEEPER_TICK_TIME: 2000
+
+      kafka:
+        image: confluentinc/cp-kafka:7.4.0
+        env:
+          KAFKA_BROKER_ID: 1
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        options: >-
+          --health-cmd "kafka-broker-api-versions.sh --bootstrap-server kafka:9092"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+
+      timescaledb:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: quality
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Run Alembic migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/quality
+        run: alembic upgrade head
+
+      - name: Create Kafka test topic
+        run: |
+          docker exec $(docker ps -qf "ancestor=confluentinc/cp-kafka:7.4.0") \
+            kafka-topics.sh \
+            --bootstrap-server kafka:9092 \
+            --create --if-not-exists \
+            --topic measurements.test \
+            --partitions 3 \
+            --replication-factor 1
+
+      - name: Run burst latency integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/quality
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/quality
+          KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+          KAFKA_TOPIC: measurements.test
+          PYTHONPATH: .
+        run: |
+          pytest tests/integration/test_burst_latency.py \
+            -v --tb=short -s \
+            --timeout=60
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: pytest-results.xml
+          retention-days: 7
