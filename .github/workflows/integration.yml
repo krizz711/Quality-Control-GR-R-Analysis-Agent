@@ -26,7 +26,7 @@ jobs:
           KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
           KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
           KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
         options: >-
           --health-cmd "kafka-broker-api-versions.sh\
             --bootstrap-server kafka:9092"
@@ -77,8 +77,10 @@ jobs:
 
       - name: Run burst latency integration tests
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/quality
-          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/quality
+          DATABASE_URL: >-
+            postgresql://postgres:postgres@localhost:5432/quality
+          TEST_DATABASE_URL: >-
+            postgresql://postgres:postgres@localhost:5432/quality
           KAFKA_BOOTSTRAP_SERVERS: kafka:9092
           KAFKA_TOPIC: measurements.test
           PYTHONPATH: .

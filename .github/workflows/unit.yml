@@ -26,7 +26,7 @@ jobs:
       - name: Run unit tests
         env:
           PYTHONPATH: .
-          USE_LEGACY_SQLITE: "true"
+          USE_LEGACY_SQLITE: true
         run: |
           pytest tests/ \
             --ignore=tests/integration \
