@@ -12,6 +12,7 @@ CREATE TABLE measurements (
     operator_id VARCHAR(64),
     equipment_id VARCHAR(64),
     shift VARCHAR(16),
+    source_event_id VARCHAR(64) UNIQUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     created_by VARCHAR(64) DEFAULT 'system',
     PRIMARY KEY (id, timestamp)

@@ -30,6 +30,7 @@ import {
   type DashboardSummaryResponse,
   type GRRHistoryItem,
 } from "@/api/apiClient";
+import { useRealtimeStream } from "@/api/realtime";
 
 type DashboardPayload = {
   summary: DashboardSummaryResponse;
@@ -173,19 +174,17 @@ export default function DashboardPage() {
   }, [hasLoadedOnce]);
 
   useEffect(() => {
-    const initialTimer = window.setTimeout(() => {
-      void loadDashboard();
-    }, 0);
-
-    const interval = window.setInterval(() => {
-      void loadDashboard();
-    }, 30_000);
-
-    return () => {
-      window.clearTimeout(initialTimer);
-      window.clearInterval(interval);
-    };
+    void loadDashboard();
   }, [loadDashboard]);
+
+  useRealtimeStream({
+    onEvent: (event) => {
+      const eventType = String(event.type || "");
+      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event"].includes(eventType)) {
+        void loadDashboard();
+      }
+    },
+  });
 
   const handleResolveAlert = useCallback(
     async (alertId: string) => {

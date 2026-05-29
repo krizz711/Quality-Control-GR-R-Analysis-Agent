@@ -159,7 +159,7 @@ export interface UseApiState<T> {
   refetch: () => void;
 }
 
-const API_BASE_URL = (() => {
+export const resolveApiBaseUrl = () => {
   const viteUrl =
     typeof import.meta !== "undefined"
       ? (import.meta as ImportMeta & { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL
@@ -174,10 +174,10 @@ const API_BASE_URL = (() => {
   // Force production client to use local backend when not otherwise provided.
   // Prefer Vite (dev), Next public env (build), fallback to loopback API port.
   return viteUrl || nextUrl || "http://127.0.0.1:8000";
-})();
+};
 
 const axiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: resolveApiBaseUrl(),
 });
 
 function getErrorMessage(error: unknown): string {

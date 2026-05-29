@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlalchemy import UUID, Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import UUID, Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -11,6 +11,9 @@ class Base(DeclarativeBase):
 
 class Measurement(Base):
     __tablename__ = "measurements"
+    __table_args__ = (
+        UniqueConstraint("source_event_id", "timestamp", name="uq_measurements_source_event_id_timestamp"),
+    )
 
     # TimescaleDB hypertables require the partition column in primary keys.
     id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
@@ -25,6 +28,7 @@ class Measurement(Base):
     operator_id: Mapped[str | None] = mapped_column(String(64))
     equipment_id: Mapped[str | None] = mapped_column(String(64))
     shift: Mapped[str | None] = mapped_column(String(16))
+    source_event_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
     created_by: Mapped[str] = mapped_column(String(64), default="system")
 

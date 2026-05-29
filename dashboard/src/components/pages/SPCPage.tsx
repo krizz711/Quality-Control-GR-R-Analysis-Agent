@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, Loader2, Plus, RotateCcw, Send } from "lucide-react";
 import {
   CartesianGrid,
@@ -20,6 +20,7 @@ import {
   type SPCDataResponse,
   type SPCViolation,
 } from "@/api/apiClient";
+import { useRealtimeStream } from "@/api/realtime";
 
 type ChartPoint = {
   index: number;
@@ -73,6 +74,33 @@ export default function SPCPage() {
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  const loadHistory = useCallback(async () => {
+    if (!processName) {
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const history = await getSPCHistory(processName);
+      const values = [...history.points]
+        .reverse()
+        .map((point) => Number(point.value))
+        .filter(Number.isFinite)
+        .slice(-50);
+
+      setMeasurements(values);
+      if (values.length >= 2) {
+        setAnalysis(await submitSPCData({ process_name: processName, measurements: values }));
+      } else {
+        setAnalysis(null);
+      }
+    } catch {
+      showToast("SPC history could not be loaded.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [processName]);
+
   useEffect(() => {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (stored) {
@@ -82,40 +110,23 @@ export default function SPCPage() {
   }, []);
 
   useEffect(() => {
-    if (!processName) return;
-
-    let active = true;
-    const loadHistory = async () => {
-      setHistoryLoading(true);
-      try {
-        const history = await getSPCHistory(processName);
-        if (!active) return;
-
-        const values = [...history.points]
-          .reverse()
-          .map((point) => Number(point.value))
-          .filter(Number.isFinite)
-          .slice(-50);
-
-        setMeasurements(values);
-        if (values.length >= 2) {
-          const result = await submitSPCData({ process_name: processName, measurements: values });
-          if (active) setAnalysis(result);
-        } else if (active) {
-          setAnalysis(null);
-        }
-      } catch (error) {
-        if (active) showToast("SPC history could not be loaded.");
-      } finally {
-        if (active) setHistoryLoading(false);
-      }
-    };
-
     void loadHistory();
-    return () => {
-      active = false;
-    };
-  }, [processName]);
+  }, [loadHistory]);
+
+  useRealtimeStream({
+    enabled: Boolean(processName),
+    onEvent: (event) => {
+      const eventType = String(event.type || "");
+      const eventProcess = String(event.process_name || event.characteristic_name || event.equipment_id || "");
+      if (!processName || !eventProcess) {
+        return;
+      }
+
+      if (["measurement.processed", "spc.analysis", "mes.event", "qms.event"].includes(eventType) && eventProcess === processName) {
+        void loadHistory();
+      }
+    },
+  });
 
   const chartPoints = useMemo(
     () => buildChartPoints(measurements, analysis?.violations ?? []),

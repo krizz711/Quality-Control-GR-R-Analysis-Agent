@@ -1,10 +1,12 @@
 from datetime import datetime
 from typing import Optional
+import uuid
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class MeasurementEvent(BaseModel):
+    event_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: datetime
     part_number: str
     characteristic_name: str

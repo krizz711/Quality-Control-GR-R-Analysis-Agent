@@ -41,6 +41,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from agent.alert_engine import AlertEngine
 from api.auth import resolve_current_user, router as auth_router
 from api.rate_limit import limiter
+from api.startup import lifespan
 from core.config import settings
 from core.logging_config import setup_logging
 from db.database import AsyncSessionLocal, engine
@@ -58,6 +59,7 @@ app = FastAPI(
     title="Arad Quality Agent API",
     description="Manufacturing quality control — GR&R analysis, SPC monitoring, and intelligent alerting.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.state.limiter = limiter
@@ -72,12 +74,6 @@ async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) 
 
 app.add_middleware(SlowAPIMiddleware)
 
-
-@app.on_event("startup")
-async def initialize_database_schema() -> None:
-    if engine.url.drivername.startswith("sqlite"):
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
 
 _DEV_CORS_ORIGINS = ["http://localhost:3000", "http://localhost:5173", "http://localhost:3002", "http://localhost:3004"]
 
@@ -132,6 +128,7 @@ AUTH_EXEMPT_PATHS = {
     "/health",
     "/api/v1/health",
     "/api/v1/auth/token",
+    "/api/v1/ws/measurements",
     "/metrics",
     "/docs",
     "/openapi.json",

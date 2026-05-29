@@ -16,6 +16,7 @@ import {
   Loader2
 } from "lucide-react";
 import { getAlerts, recordAlertFeedback, resolveAlert, showToast, type AlertItem } from "@/api/apiClient";
+import { useRealtimeStream } from "@/api/realtime";
 
 function formatTimeAgo(dateString: string) {
   const date = new Date(dateString);
@@ -87,31 +88,17 @@ export default function AlertsPage() {
     fetchAlerts();
   }, []);
 
-  // Polling simulation every 15s
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await getAlerts({ limit: 100 });
-        setAlerts(prev => {
-          if (res.items.length > 0 && prev.length > 0) {
-            const latestNew = res.items[0];
-            const latestOld = prev[0];
-            if (latestNew.id !== latestOld.id) {
-              if (soundEnabled) {
-                // Sound enabled - in a real app this would play an audio file
-                // For this simulation we just show the toast
-              }
-              showToast(`New Alert: ${latestNew.message}`);
-            }
-          }
-          return res.items;
-        });
-      } catch (e) {
-        // ignore polling errors to prevent console spam
+  useRealtimeStream({
+    onEvent: (event) => {
+      const eventType = String(event.type || "");
+      if (eventType === "alert.created" || eventType === "dlq.fallback") {
+        void fetchAlerts(true);
+        if (soundEnabled && eventType === "alert.created" && typeof event.message === "string") {
+          showToast(`New Alert: ${event.message}`);
+        }
       }
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [soundEnabled]);
+    },
+  });
 
   const handleResolve = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
