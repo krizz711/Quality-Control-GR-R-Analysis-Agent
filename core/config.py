@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_project_key: str = "QUAL"
 
+    # QMS integration
+    qms_api_url: str = ""
+
     # App
     environment: str = "development"
     log_level: str = "INFO"

@@ -30,6 +30,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["quality-api"])
 
 
+@router.patch("/alerts/{alert_id}/acknowledge", response_model=AlertResolveResponse)
+async def acknowledge_alert(alert_id: str, request: Request):
+    """Mark an alert as acknowledged and record the actor."""
+    actor = request.headers.get("X-User", "system")
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT * FROM alerts WHERE id = :id"), {"id": alert_id}
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+        await session.execute(
+            text("UPDATE alerts SET status='acknowledged', resolved_at=NOW(), resolved_by=:actor WHERE id=:id"),
+            {"actor": actor, "id": alert_id},
+        )
+        await session.commit()
+        return AlertResolveResponse(alert_id=alert_id, resolved_at=_now())
+
+
+
 @router.websocket("/ws/measurements")
 async def websocket_measurements(websocket: WebSocket) -> None:
     await realtime_state.manager.connect(websocket)

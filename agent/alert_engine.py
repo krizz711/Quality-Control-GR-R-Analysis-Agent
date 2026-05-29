@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 
 from agent.alerts import create_jira_ticket, send_slack_alert
+from agent.alert_manager import AlertEvent, AlertManager
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import QualityViolation
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 class AlertEngine:
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
+        self.alert_manager = AlertManager()
 
     async def process_pending_violations(self, session=None) -> int:
         """
@@ -65,23 +67,15 @@ class AlertEngine:
                     f"UCL: {v['ucl']:.4f} | LCL: {v['lcl']:.4f}"
                 )
 
-                # STEP 5: Send Slack alert
-                await send_slack_alert(
-                    settings.slack_webhook_url,
-                    message,
+                # STEP 5: Use AlertManager to dispatch
+                ev = AlertEvent(
+                    type="spc_violation",
                     severity=severity,
+                    message=message,
+                    process_name=f"{v.get('part_number')}:{v.get('characteristic_name')}",
+                    payload={"violation_id": str(v.get("id"))},
                 )
-
-                # STEP 6: Create JIRA ticket if critical and JIRA configured
-                if severity == "critical" and settings.jira_url:
-                    await create_jira_ticket(
-                        settings.jira_url,
-                        settings.jira_email,
-                        settings.jira_api_token,
-                        settings.jira_project_key,
-                        summary=f"Quality Violation: {v['part_number']} {v['violation_type']}",
-                        description=message,
-                    )
+                await self.alert_manager.send(ev)
 
                 # STEP 7: Mark alert_sent = True
                 await session.execute(
