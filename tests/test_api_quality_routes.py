@@ -34,9 +34,10 @@ def _result_with_rows(rows: list[dict[str, object]]) -> MagicMock:
     return result
 
 
+@patch("agent.alert_manager.AlertManager.send", new_callable=AsyncMock)
 @patch("api.quality_routes.geminiService.analyzeGRR", new_callable=AsyncMock, return_value="GRR AI")
 @patch("api.quality_routes.AsyncSessionLocal")
-def test_api_grr_analyze_and_history(mock_session_local: MagicMock, mock_gemini: AsyncMock) -> None:
+def test_api_grr_analyze_and_history(mock_session_local: MagicMock, mock_gemini: AsyncMock, mock_alert_send: AsyncMock) -> None:
     session = _wire_session(mock_session_local)
 
     payload = {
@@ -195,8 +196,10 @@ def test_dashboard_summary_and_audit_log(mock_session_local: MagicMock) -> None:
     assert session.execute.await_count >= 4
 
 
+@patch("agent.alert_manager.AlertManager.send", new_callable=AsyncMock)
 @patch("api.quality_routes.AsyncSessionLocal")
-def test_alert_lifecycle(mock_session_local: MagicMock) -> None:
+def test_alert_lifecycle(mock_session_local: MagicMock, mock_send: AsyncMock) -> None:
+    mock_send.return_value = uuid.uuid4()
     trigger_session = _wire_session(mock_session_local)
 
     trigger = client.post(
@@ -210,7 +213,7 @@ def test_alert_lifecycle(mock_session_local: MagicMock) -> None:
     )
     assert trigger.status_code == 201
     assert trigger.json()["alert_id"]
-    assert trigger_session.commit.await_count == 1
+    mock_send.assert_called_once()
 
     list_result = _result_with_rows(
         [

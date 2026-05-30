@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
-from agent.alerts import create_jira_ticket, send_slack_alert
 from agent.alert_manager import AlertEvent, AlertManager
 from core.config import settings
 from db.database import AsyncSessionLocal

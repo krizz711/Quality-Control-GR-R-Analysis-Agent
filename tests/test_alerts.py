@@ -16,16 +16,22 @@ async def test_slack_sends_correct_payload(mock_slack_client: AsyncMock) -> None
         "https://fake.webhook",
         "test msg",
         "critical",
-        "STUDY-1",
+        study_id="STUDY-1",
     )
 
     mock_slack_client.post.assert_awaited_once()
     _, kwargs = mock_slack_client.post.await_args
     payload = kwargs["json"]
+    # Block Kit format: check attachments color and blocks content
     assert "attachments" in payload
     assert payload["attachments"][0]["color"] == "#ff0000"
-    assert "STUDY-1" in payload["attachments"][0]["text"]
+    # The message content lives in blocks
+    import json as _json
+    s = _json.dumps(payload)
+    assert "STUDY-1" in s
+    assert "critical" in s.lower()
     assert result is True
+
 
 
 @pytest.mark.asyncio

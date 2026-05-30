@@ -8,9 +8,11 @@ from api.main import app
 
 client = TestClient(app, headers={"x-api-key": os.environ["API_AUTH_KEY"]})
 
-@patch("api.main.mlflow")
+@patch("api.main.get_adapter")
 @patch("api.main.AsyncSessionLocal")
-def test_create_grr_study_xbar_r(mock_session_local, mock_mlflow):
+def test_create_grr_study_xbar_r(mock_session_local, mock_get_adapter):
+    mock_adapter = AsyncMock()
+    mock_get_adapter.return_value = mock_adapter
     payload = {
         "part_ids": ["P1", "P2"],
         "operator_ids": ["A", "B"],
@@ -44,12 +46,12 @@ def test_create_grr_study_xbar_r(mock_session_local, mock_mlflow):
     mock_session.add.assert_called()
     mock_session.commit.assert_called()
 
-    # Verify mlflow was called
-    mock_mlflow.set_experiment.assert_called_with("grr_studies")
+    # Verify adapter was called
+    mock_adapter.log_experiment.assert_called_once()
 
-@patch("api.main.mlflow")
+@patch("api.main.get_adapter")
 @patch("api.main.AsyncSessionLocal")
-def test_create_grr_study_invalid_method(mock_session_local, mock_mlflow):
+def test_create_grr_study_invalid_method(mock_session_local, mock_get_adapter):
     payload = {
         "part_ids": ["P1", "P2"],
         "operator_ids": ["A", "B"],

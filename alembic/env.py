@@ -4,6 +4,7 @@ import asyncio
 
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy import pool
+from sqlalchemy import text
 
 from alembic import context
 import os
@@ -24,6 +25,12 @@ except Exception:  # pragma: no cover - best-effort import
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# If a DATABASE_URL environment variable is provided (container runtime),
+# make sure the alembic Config uses it as the main sqlalchemy.url so both
+# CLI and programmatic invocation pick it up.
+if os.environ.get("DATABASE_URL"):
+    config.set_main_option("sqlalchemy.url", os.environ.get("DATABASE_URL"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -81,16 +88,45 @@ def run_migrations_online() -> None:
 
     async def run_async_migrations() -> None:
         async with connectable.connect() as connection:
-            await connection.run_sync(
-                lambda sync_connection: context.configure(
-                    connection=sync_connection,
-                    target_metadata=target_metadata,
-                    version_table="arad_alembic_version",
-                    include_object=include_object,
-                )
-            )
             async with connection.begin():
-                await connection.run_sync(lambda _: context.run_migrations())
+                await connection.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS arad_alembic_version (
+                            version_num VARCHAR(255) NOT NULL PRIMARY KEY
+                        )
+                        """
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "ALTER TABLE arad_alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)"
+                    )
+                )
+                await connection.run_sync(
+                    lambda sync_connection: context.configure(
+                        connection=sync_connection,
+                        target_metadata=target_metadata,
+                        version_table="arad_alembic_version",
+                        include_object=include_object,
+                        compare_type=True,
+                        compare_server_default=True,
+                    )
+                )
+                try:
+                    await connection.run_sync(lambda _: context.run_migrations())
+                except Exception as e:
+                    # Don't fail the whole startup on idempotent-already-exists issues.
+                    if "already exists" in str(e).lower():
+                        import logging
+
+                        logging.getLogger("alembic").warning(
+                            "Migration skipped (object already exists): %s", e
+                        )
+                    else:
+                        raise
+
+    asyncio.run(run_async_migrations())
 
 
 def include_object(object_, name, type_, reflected, compare_to):
@@ -100,8 +136,6 @@ def include_object(object_, name, type_, reflected, compare_to):
     if type_ == "table" and reflected and target_metadata is not None:
         return name in target_metadata.tables
     return True
-
-    asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

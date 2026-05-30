@@ -23,7 +23,7 @@ import asyncio
 
 import numpy as np
 import pandas as pd
-import mlflow
+from agent.adapters.registry import get_adapter
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.openapi.utils import get_openapi
@@ -515,21 +515,24 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
 
             await session.commit()
 
-        # 7. Log to MLflow
-        mlflow.set_experiment("grr_studies")
-        with mlflow.start_run(run_name=study_id_str):
-            mlflow.log_params({
+        # 7. Log to ML registry via adapter
+        adapter = get_adapter()
+        await adapter.log_experiment(
+            experiment_name="grr_studies",
+            run_name=study_id_str,
+            params={
                 "method": body.method,
                 "n_parts": len(body.part_ids),
-                "n_operators": len(body.operator_ids)
-            })
-            mlflow.log_metrics({
+                "n_operators": len(body.operator_ids),
+            },
+            metrics={
                 "grr_pct": result.total_grr,
                 "ev": result.repeatability,
                 "av": result.reproducibility,
-                "ndc": result.ndc
-            })
-            mlflow.set_tag("acceptance", verdict.level.value)
+                "ndc": result.ndc,
+            },
+            tags={"acceptance": verdict.level.value},
+        )
 
         duration = time.time() - start_time
         grr_study_duration.observe(duration)

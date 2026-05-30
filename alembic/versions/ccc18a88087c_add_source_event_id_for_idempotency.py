@@ -1,7 +1,7 @@
 """add source_event_id for idempotency
 
 Revision ID: ccc18a88087c
-Revises: 20260529_measurement_event_id
+Revises: e9501605a8c2
 Create Date: 2026-05-29 03:35:42.411576
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'ccc18a88087c'
-down_revision: Union[str, Sequence[str], None] = '20260529_measurement_event_id'
+down_revision: Union[str, Sequence[str], None] = 'e9501605a8c2'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

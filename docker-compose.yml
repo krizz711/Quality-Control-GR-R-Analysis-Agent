@@ -9,7 +9,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arad_pass}
     volumes:
       - timescale_data:/var/lib/postgresql/data
-      - ./db/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U arad -d arad_quality"]
       interval: 10s
@@ -106,13 +105,13 @@ services:
       ALLOW_MOCK_DATA: "false"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
       interval: 15s
       timeout: 5s
       retries: 5
     networks:
       - arad-network
-    command: ["sh", "-c", "alembic -c /app/alembic.ini upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "./scripts/ensure_db_ready.sh && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
 
   consumer:
     image: arad-quality-agent-api:0.1.0
