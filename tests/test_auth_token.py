@@ -1,7 +1,6 @@
 import os
 
 # Provide minimal required settings so importing core.settings succeeds during test collection.
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("API_AUTH_KEY", "test-api-key")
 
 from fastapi.testclient import TestClient
@@ -11,7 +10,7 @@ from api.main import app
 
 
 async def _fake_auth(username: str, password: str):
-    return {"username": "alice", "role": "admin"}
+    return {"username": "alice"}
 
 
 def test_issue_token_monkeypatched(monkeypatch):

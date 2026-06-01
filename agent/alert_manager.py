@@ -34,6 +34,7 @@ import os
 from agent import alerts as alerts_mod
 from db.database import AsyncSessionLocal
 from db.models import Alert, AuditLog, NotificationDelivery
+from backend.services.audit_logger import log_event as audit_log_event
 
 logger = logging.getLogger(__name__)
 
@@ -465,5 +466,33 @@ class AlertManager:
                 else:
                     tasks = [asyncio.create_task(c) for c in coros]
                     await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Best-effort: record an audit event for the alert send (channels attempted)
+            try:
+                channels = []
+                if slack_url:
+                    channels.append("slack")
+                if smtp_host and alert_email_recipients:
+                    channels.append("email")
+                if ev.severity == "critical" and sms_webhook and sms_to_numbers:
+                    channels.append("sms")
+                if should_create_jira:
+                    channels.append("jira")
+                if qms_url:
+                    channels.append("qms")
+
+                await audit_log_event(
+                    actor="system",
+                    event_type="alert_sent",
+                    component="alert_manager",
+                    metadata={
+                        "alert_id": str(alert.id),
+                        "type": ev.type,
+                        "severity": ev.severity,
+                        "channels_attempted": channels,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to write audit_event for alert %s", alert.id)
 
             return alert.id

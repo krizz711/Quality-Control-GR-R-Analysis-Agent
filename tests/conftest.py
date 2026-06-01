@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import AsyncClient
 import asyncio
 
 
@@ -75,13 +74,15 @@ async def fake_redis():
 
 @pytest.fixture
 async def async_client():
-    """Async HTTP client bound to the FastAPI app for integration tests."""
+    """Async HTTP client bound to the FastAPI app using ASGITransport."""
     try:
+        from httpx import AsyncClient, ASGITransport
         from api.main import app
     except Exception:
-        pytest.skip("api.main.app is not importable")
+        pytest.skip("httpx or api.main.app is not importable")
 
-    async with AsyncClient(app=app, base_url="http://testserver") as client:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
 
 # Make the project root importable when running pytest from any directory.
@@ -90,6 +91,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ.setdefault("API_AUTH_KEY", "test-api-key")
+
+# Tests require a real Postgres/TimescaleDB. Fail fast if TEST_DATABASE_URL
+# is not provided so developers run the DB in Docker compose instead of
+# accidentally using SQLite which gives false confidence.
+if not os.environ.get("TEST_DATABASE_URL"):
+    raise RuntimeError(
+        "TEST_DATABASE_URL is not set. Run: docker compose up -d timescaledb redis "
+        "then: set TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arad_quality"
+    )
 
 # On Windows, asyncpg works best with the SelectorEventLoop policy
 if sys.platform == "win32":
@@ -100,73 +110,53 @@ if sys.platform == "win32":
 
 
 @pytest.fixture
-async def db_conn(monkeypatch):
-    """Provide a SQLAlchemy `AsyncSession` bound to a transactional connection.
-
-    The transaction is rolled back after the test so tests can run against
-    a real Postgres instance without mutating state.
+async def db_conn():
+    """Provide an `asyncpg.Connection` with an active transaction that is
+    rolled back after the test to keep the test DB clean.
     """
+    import asyncpg
+
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "TEST_DATABASE_URL is not set. Run docker compose up -d timescaledb then "
+            "set TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arad_quality"
+        )
+
+    conn = await asyncpg.connect(url)
+    tr = conn.transaction()
+    await tr.start()
     try:
-        from api.main import app
-    except Exception:
-        app = None
-
-    # Use a fresh per-test engine with a NullPool so we don't reuse asyncpg
-    # connections across event loops.
-    from db import database as db_mod
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import NullPool
-
-    engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool, pool_pre_ping=False)
-    conn = await engine.connect()
-    trans = await conn.begin()
-
-    # Create a session factory bound to the test connection. Each call to
-    # this factory returns a fresh AsyncSession instance bound to the same
-    # underlying connection. This avoids reusing the same AsyncSession
-    # instance across coroutines while keeping all work inside the
-    # transactional connection controlled by this fixture.
-    Session = async_sessionmaker(bind=conn, expire_on_commit=False)
-
-    def _make_session():
-        return Session(bind=conn)
-
-    # If FastAPI app is available, override dependency to use a fresh session
-    # instance per dependency injection call.
-    if app is not None:
-        async def _get_test_session():
-            s = _make_session()
-            try:
-                yield s
-            finally:
-                try:
-                    await s.close()
-                except Exception:
-                    pass
-
-        app.dependency_overrides[db_mod.get_session] = _get_test_session
-
-    # Install the factory into the AsyncSessionLocal proxy so application
-    # code calling `async with AsyncSessionLocal()` gets a fresh session
-    # instance bound to our test connection.
-    try:
-        db_mod.AsyncSessionLocal.set_factory(lambda: _make_session())
-    except Exception:
-        # Fallback for older test runs where AsyncSessionLocal may be a plain
-        # callable; assign a factory that creates fresh sessions.
-        db_mod.AsyncSessionLocal = lambda: _make_session()
-
-    try:
-        session = _make_session()
-        yield session
+        yield conn
     finally:
         try:
-            await session.close()
+            await tr.rollback()
         except Exception:
             pass
-        await trans.rollback()
-        await conn.close()
-        await engine.dispose()
+        try:
+            await conn.close()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+async def auth_token(async_client):
+    # Single shared auth token fixture; create user if needed.
+    resp = await async_client.post(
+        "/api/v1/auth/token",
+        json={"username": "testuser", "password": "testpass"},
+    )
+    if resp.status_code == 401:
+        await async_client.post(
+            "/api/v1/auth/register",
+            json={"username": "testuser", "password": "testpass"},
+        )
+        resp = await async_client.post(
+            "/api/v1/auth/token",
+            json={"username": "testuser", "password": "testpass"},
+        )
+    assert resp.status_code == 200, f"Auth failed: {resp.text}"
+    return resp.json()["access_token"]
 
 @pytest.fixture
 def mock_slack_client():

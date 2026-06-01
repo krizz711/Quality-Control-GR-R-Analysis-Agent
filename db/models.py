@@ -101,6 +101,22 @@ class AuditLog(Base):
     )
 
 
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+    actor: Mapped[str | None] = mapped_column(String(128))
+    user_id: Mapped[str | None] = mapped_column(String(128))
+    event_type: Mapped[str] = mapped_column(String(128))
+    component: Mapped[str | None] = mapped_column(String(128))
+    input_hash: Mapped[str | None] = mapped_column(String(128))
+    algorithm_version: Mapped[str | None] = mapped_column(String(64))
+    result_summary: Mapped[dict | None] = mapped_column(JSON)
+    details: Mapped[dict | None] = mapped_column("metadata", JSON)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+
+
 class Alert(Base):
     __tablename__ = "alerts"
 
@@ -153,7 +169,6 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
     username: Mapped[str] = mapped_column(String(128), unique=True)
     hashed_password: Mapped[str] = mapped_column(String(256))
-    role: Mapped[str] = mapped_column(String(32), default="quality_engineer")
     created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
 
 
@@ -161,6 +176,7 @@ __all__ = [
     "Alert",
     "AlertFeedback",
     "AuditLog",
+    "AuditEvent",
     "Base",
     "GrrStudy",
     "Measurement",

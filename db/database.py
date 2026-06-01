@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
@@ -32,7 +33,11 @@ def get_engine():
             except Exception:
                 pass
 
-        _engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        engine_kwargs = {"pool_pre_ping": True}
+        if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TEST_DATABASE_URL"):
+            engine_kwargs["poolclass"] = NullPool
+
+        _engine = create_async_engine(DATABASE_URL, **engine_kwargs)
     return _engine
 
 

@@ -46,6 +46,7 @@ from core.config import settings
 from core.logging_config import setup_logging
 from db.database import AsyncSessionLocal, engine
 from db.models import AuditLog, Base, GrrStudy, QualityViolation, ReviewQueue
+from backend.services.audit_logger import log_event as audit_log_event
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 from api.ai_routes import router as ai_router
@@ -128,6 +129,7 @@ AUTH_EXEMPT_PATHS = {
     "/health",
     "/api/v1/health",
     "/api/v1/auth/token",
+    "/api/v1/auth/register",
     "/api/v1/ws/measurements",
     "/metrics",
     "/docs",
@@ -174,11 +176,34 @@ async def enforce_authentication(request: Request, call_next):
     try:
         user = await resolve_current_user(request)
     except HTTPException as exc:
+        # Log authentication failures to audit trail
+        try:
+            await audit_log_event(
+                actor=None,
+                user_id=None,
+                event_type="auth_failure",
+                component="api_middleware",
+                metadata={"path": request.url.path, "reason": str(exc.detail)},
+                ip_address=_client_ip(request),
+            )
+        except Exception:
+            pass
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     if user is None:
         # Return 403 for missing authentication on protected business endpoints
         # to match historical behavior and test expectations.
+        try:
+            await audit_log_event(
+                actor=None,
+                user_id=None,
+                event_type="auth_failure",
+                component="api_middleware",
+                metadata={"path": request.url.path, "reason": "missing_auth"},
+                ip_address=_client_ip(request),
+            )
+        except Exception:
+            pass
         return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Missing authentication"})
 
     request.state.user = user
@@ -199,6 +224,24 @@ async def log_requests(request: Request, call_next):
         response.status_code,
         duration_ms,
     )
+    # Record request to audit events (best-effort)
+    try:
+        actor = getattr(getattr(request, "state", None), "user", None)
+        actor_name = getattr(actor, "username", None) if actor else "anonymous"
+        await audit_log_event(
+            actor=actor_name,
+            event_type="request",
+            component="api",
+            metadata={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+            ip_address=_client_ip(request),
+        )
+    except Exception:
+        pass
     return response
 
 

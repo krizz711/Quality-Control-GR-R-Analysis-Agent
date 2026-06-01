@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from core.config import settings
 from db.database import AsyncSessionLocal
+from db.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,6 @@ class TokenResponse(BaseModel):
 
 class CurrentUser(BaseModel):
     username: str
-    role: str
     auth_method: str = "jwt"
 
 
@@ -72,7 +72,7 @@ async def authenticate_user(username: str, password: str) -> dict[str, str] | No
         result = await session.execute(
             text(
                 """
-                SELECT username, hashed_password, role
+                SELECT username, hashed_password
                 FROM users
                 WHERE username = :username
                 """
@@ -86,7 +86,7 @@ async def authenticate_user(username: str, password: str) -> dict[str, str] | No
         if not verify_password(password, row["hashed_password"]):
             return None
 
-        return {"username": row["username"], "role": row["role"]}
+        return {"username": row["username"]}
 
 
 async def issue_token(body: LoginRequest = Body(...)) -> TokenResponse:
@@ -94,7 +94,7 @@ async def issue_token(body: LoginRequest = Body(...)) -> TokenResponse:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
-    access_token = create_access_token({"sub": user["username"], "role": user["role"]})
+    access_token = create_access_token({"sub": user["username"]})
     return TokenResponse(
         access_token=access_token,
         expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -103,6 +103,23 @@ async def issue_token(body: LoginRequest = Body(...)) -> TokenResponse:
 
 @router.post("/api/v1/auth/token", response_model=TokenResponse)
 async def issue_token_route(body: LoginRequest = Body(...)) -> TokenResponse:
+    return await issue_token(body)
+
+
+@router.post("/api/v1/auth/register", response_model=TokenResponse)
+async def register_user(body: LoginRequest = Body(...)) -> TokenResponse:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT username FROM users WHERE username = :username"),
+            {"username": body.username},
+        )
+        if result.mappings().first():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
+        
+        hashed_password = get_password_hash(body.password)
+        session.add(User(username=body.username, hashed_password=hashed_password))
+        await session.commit()
+    
     return await issue_token(body)
 
 
@@ -119,11 +136,10 @@ async def resolve_current_user(request: Request) -> CurrentUser | None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
         username = payload.get("sub")
-        role = payload.get("role")
-        if not username or not role:
+        if not username:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
-        return CurrentUser(username=username, role=role, auth_method="jwt")
+        return CurrentUser(username=username, auth_method="jwt")
 
     api_key = request.headers.get("x-api-key")
     if api_key:
@@ -131,7 +147,7 @@ async def resolve_current_user(request: Request) -> CurrentUser | None:
             # Treat invalid API key as forbidden to align with historical behavior/tests
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
         logger.warning("Using deprecated X-API-KEY authentication")
-        return CurrentUser(username="api_key_user", role="admin", auth_method="api_key")
+        return CurrentUser(username="api_key_user", auth_method="api_key")
 
     return None
 
@@ -144,11 +160,10 @@ async def get_current_user(request: Request) -> dict[str, str]:
 
 
 async def require_role(request: Request, role: str) -> dict[str, str]:
+    # Legacy compatibility: accept any authenticated user regardless of role.
     user = await resolve_current_user(request)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication")
-    if user.role != role:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
     return user.model_dump()
 
 

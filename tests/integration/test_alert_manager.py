@@ -396,7 +396,7 @@ async def test_acknowledge_endpoint_updates_real_alert(db_conn):
     from httpx import ASGITransport
     from api.auth import create_access_token
 
-    jwt_token = create_access_token({"sub": "test-user", "role": "admin"})
+    jwt_token = create_access_token({"sub": "test-user"})
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         response = await client.patch(
