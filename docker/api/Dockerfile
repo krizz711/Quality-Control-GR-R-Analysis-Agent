@@ -7,13 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl librdkafka1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl librdkafka1 netcat-openbsd && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml poetry.lock README.md ./
 COPY alembic.ini ./
 COPY alembic ./alembic
+COPY scripts ./scripts
 COPY agent ./agent
 COPY api ./api
 COPY backend ./backend
@@ -25,6 +24,8 @@ COPY spc ./spc
 
 RUN pip install --upgrade pip \
     && pip install .
+
+RUN chmod +x ./scripts/ensure_db_ready.sh || true
 
 EXPOSE 8000
 

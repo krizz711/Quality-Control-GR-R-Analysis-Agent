@@ -34,13 +34,11 @@ def _count_result(count: int) -> MagicMock:
 
 
 @pytest.mark.asyncio
-@patch("agent.alert_engine.create_jira_ticket", new_callable=AsyncMock)
-@patch("agent.alert_engine.send_slack_alert", new_callable=AsyncMock, return_value=True)
+@patch("agent.alert_engine.AlertManager.send", new_callable=AsyncMock)
 @patch("agent.alert_engine.settings")
 async def test_engine_marks_violation_sent(
     mock_settings: MagicMock,
-    mock_slack: AsyncMock,
-    mock_jira: AsyncMock,
+    mock_alert_manager_send: AsyncMock,
 ) -> None:
     mock_settings.slack_webhook_url = "https://hooks.slack.com/fake"
     mock_settings.jira_url = ""
@@ -58,23 +56,25 @@ async def test_engine_marks_violation_sent(
     sent = await engine.process_pending_violations(session=mock_session)
 
     assert sent == 1
-    mock_slack.assert_awaited_once()
-    assert mock_slack.await_args.kwargs["severity"] == "critical"
+    mock_alert_manager_send.assert_called_once()
+    
+    # Check what was passed to alert manager
+    ev = mock_alert_manager_send.call_args[0][0]
+    assert ev.severity == "critical"
 
     update_call = mock_session.execute.await_args_list[2]
     assert "alert_sent=TRUE" in str(update_call.args[0])
     update_params = update_call.args[1]
     assert update_params["id"] == str(_VIOLATION["id"])
     mock_session.commit.assert_awaited_once()
-    mock_jira.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@patch("agent.alert_engine.send_slack_alert", new_callable=AsyncMock)
+@patch("agent.alert_engine.AlertManager.send", new_callable=AsyncMock)
 @patch("agent.alert_engine.settings")
 async def test_engine_dedup_skips_recent_alert(
     mock_settings: MagicMock,
-    mock_slack: AsyncMock,
+    mock_alert_manager_send: AsyncMock,
 ) -> None:
     mock_settings.slack_webhook_url = "https://hooks.slack.com/fake"
 
@@ -90,7 +90,7 @@ async def test_engine_dedup_skips_recent_alert(
     sent = await engine.process_pending_violations(session=mock_session)
 
     assert sent == 0
-    mock_slack.assert_not_awaited()
+    mock_alert_manager_send.assert_not_called()
     mock_session.commit.assert_not_awaited()
 
 

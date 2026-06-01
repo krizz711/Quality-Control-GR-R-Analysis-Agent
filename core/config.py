@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_project_key: str = "QUAL"
 
+    # QMS integration
+    qms_api_url: str = ""
+
+    # Twilio SDK (optional — falls back to generic SMS webhook)
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+
+    # ML Tool adapter selection (mlflow | gemini)
+    ml_tool_name: str = "mlflow"
+
+    # Dashboard URL for email alert links
+    dashboard_url: str = "http://localhost:3000"
+
     # App
     environment: str = "development"
     log_level: str = "INFO"

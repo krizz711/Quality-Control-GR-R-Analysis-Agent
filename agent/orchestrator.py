@@ -18,13 +18,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-import mlflow
+from agent.adapters.registry import get_adapter
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
 from agent.alert_engine import AlertEngine
-from agent.alerts import send_slack_alert
 from api.realtime import publish_realtime_event
 from core.config import settings
 from db.database import AsyncSessionLocal
@@ -295,15 +294,20 @@ class QualityOrchestrator:
                     """),
                     {"sid": study_id},
                 )
-                await send_slack_alert(
-                    settings.slack_webhook_url,
-                    f"GR&R study requires human review.\n"
-                    f"Equipment: {event.get('equipment_id')} | "
-                    f"%GRR: {result.total_grr:.1f}% | NDC: {result.ndc}\n"
-                    f"Review at: http://localhost:8000/docs#/reviews",
+                from agent.alert_manager import AlertManager, AlertEvent
+                ev = AlertEvent(
+                    type="grr_review_required",
                     severity="warning",
-                    study_id=study_id,
+                    message=(
+                        f"GR&R study requires human review.\n"
+                        f"Equipment: {event.get('equipment_id')} | "
+                        f"%GRR: {result.total_grr:.1f}% | NDC: {result.ndc}\n"
+                        f"Review at: http://localhost:8000/docs#/reviews"
+                    ),
+                    process_name=event.get("equipment_id", "Unknown Equipment"),
+                    payload={"study_id": study_id, "grr_percent": result.total_grr, "ndc": result.ndc},
                 )
+                await AlertManager().send(ev)
 
             await session.commit()
 
@@ -320,18 +324,21 @@ class QualityOrchestrator:
             }
         )
 
-        mlflow.set_experiment("grr_studies")
-        with mlflow.start_run(run_name=study_id):
-            mlflow.log_metrics(
-                {
-                    "grr_pct": result.total_grr,
-                    "ndc": result.ndc,
-                    "ev": result.repeatability,
-                    "av": result.reproducibility,
-                }
-            )
-            mlflow.set_tag("acceptance", verdict.level.value)
-            mlflow.set_tag("equipment_id", event.get("equipment_id", "unknown"))
+        adapter = get_adapter()
+        await adapter.log_experiment(
+            experiment_name="grr_studies",
+            run_name=study_id,
+            metrics={
+                "grr_pct": result.total_grr,
+                "ndc": result.ndc,
+                "ev": result.repeatability,
+                "av": result.reproducibility,
+            },
+            tags={
+                "acceptance": verdict.level.value,
+                "equipment_id": event.get("equipment_id", "unknown"),
+            },
+        )
 
         return {
             "status": "processed",

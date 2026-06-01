@@ -17,15 +17,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "users",
-        sa.Column("id", sa.UUID(), primary_key=True),
-        sa.Column("username", sa.String(length=128), nullable=False, unique=True),
-        sa.Column("hashed_password", sa.String(length=256), nullable=False),
-        sa.Column("role", sa.String(length=32), nullable=False, server_default="quality_engineer"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    # Use IF NOT EXISTS to make this migration safe to rerun on partially provisioned DBs
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY,
+            username VARCHAR(128) NOT NULL UNIQUE,
+            hashed_password VARCHAR(256) NOT NULL,
+            role VARCHAR(32) NOT NULL DEFAULT 'quality_engineer',
+            created_at TIMESTAMP WITH TIME ZONE
+        );
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_table("users")
+    op.execute("DROP TABLE IF EXISTS users")

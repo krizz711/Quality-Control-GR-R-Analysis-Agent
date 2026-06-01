@@ -1,8 +1,8 @@
-"""add source_event_id for idempotency
+"""merge_heads
 
-Revision ID: ccc18a88087c
-Revises: e9501605a8c2
-Create Date: 2026-05-29 03:35:42.411576
+Revision ID: 2b2656005ada
+Revises: 20260601_remove_role_from_users, ccc18a88087c
+Create Date: 2026-06-01 16:25:41.667694
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'ccc18a88087c'
-down_revision: Union[str, Sequence[str], None] = 'e9501605a8c2'
+revision: str = '2b2656005ada'
+down_revision: Union[str, Sequence[str], None] = ('20260601_remove_role_from_users', 'ccc18a88087c')
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

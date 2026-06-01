@@ -23,7 +23,7 @@ import asyncio
 
 import numpy as np
 import pandas as pd
-import mlflow
+from agent.adapters.registry import get_adapter
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.openapi.utils import get_openapi
@@ -46,6 +46,7 @@ from core.config import settings
 from core.logging_config import setup_logging
 from db.database import AsyncSessionLocal, engine
 from db.models import AuditLog, Base, GrrStudy, QualityViolation, ReviewQueue
+from backend.services.audit_logger import log_event as audit_log_event
 from grr.calculator import grr_xbar_r
 from grr.acceptance import evaluate
 from api.ai_routes import router as ai_router
@@ -128,6 +129,7 @@ AUTH_EXEMPT_PATHS = {
     "/health",
     "/api/v1/health",
     "/api/v1/auth/token",
+    "/api/v1/auth/register",
     "/api/v1/ws/measurements",
     "/metrics",
     "/docs",
@@ -174,11 +176,34 @@ async def enforce_authentication(request: Request, call_next):
     try:
         user = await resolve_current_user(request)
     except HTTPException as exc:
+        # Log authentication failures to audit trail
+        try:
+            await audit_log_event(
+                actor=None,
+                user_id=None,
+                event_type="auth_failure",
+                component="api_middleware",
+                metadata={"path": request.url.path, "reason": str(exc.detail)},
+                ip_address=_client_ip(request),
+            )
+        except Exception:
+            pass
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     if user is None:
         # Return 403 for missing authentication on protected business endpoints
         # to match historical behavior and test expectations.
+        try:
+            await audit_log_event(
+                actor=None,
+                user_id=None,
+                event_type="auth_failure",
+                component="api_middleware",
+                metadata={"path": request.url.path, "reason": "missing_auth"},
+                ip_address=_client_ip(request),
+            )
+        except Exception:
+            pass
         return JSONResponse(status_code=status.HTTP_403_FORBIDDEN, content={"detail": "Missing authentication"})
 
     request.state.user = user
@@ -199,6 +224,24 @@ async def log_requests(request: Request, call_next):
         response.status_code,
         duration_ms,
     )
+    # Record request to audit events (best-effort)
+    try:
+        actor = getattr(getattr(request, "state", None), "user", None)
+        actor_name = getattr(actor, "username", None) if actor else "anonymous"
+        await audit_log_event(
+            actor=actor_name,
+            event_type="request",
+            component="api",
+            metadata={
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+            ip_address=_client_ip(request),
+        )
+    except Exception:
+        pass
     return response
 
 
@@ -515,21 +558,24 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
 
             await session.commit()
 
-        # 7. Log to MLflow
-        mlflow.set_experiment("grr_studies")
-        with mlflow.start_run(run_name=study_id_str):
-            mlflow.log_params({
+        # 7. Log to ML registry via adapter
+        adapter = get_adapter()
+        await adapter.log_experiment(
+            experiment_name="grr_studies",
+            run_name=study_id_str,
+            params={
                 "method": body.method,
                 "n_parts": len(body.part_ids),
-                "n_operators": len(body.operator_ids)
-            })
-            mlflow.log_metrics({
+                "n_operators": len(body.operator_ids),
+            },
+            metrics={
                 "grr_pct": result.total_grr,
                 "ev": result.repeatability,
                 "av": result.reproducibility,
-                "ndc": result.ndc
-            })
-            mlflow.set_tag("acceptance", verdict.level.value)
+                "ndc": result.ndc,
+            },
+            tags={"acceptance": verdict.level.value},
+        )
 
         duration = time.time() - start_time
         grr_study_duration.observe(duration)

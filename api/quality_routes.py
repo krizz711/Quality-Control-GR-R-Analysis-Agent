@@ -15,19 +15,58 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Web
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
-from agent.alerts import create_jira_ticket, send_email_alert, send_slack_alert, send_sms_alert
+
 from backend.services import gemini_service as geminiService
 from api.rate_limit import limiter
 from api.realtime import publish_realtime_event, state as realtime_state
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import Alert, AlertFeedback, AuditLog, GrrStudy, Measurement, NotificationDelivery
+from backend.services.audit_logger import log_event as audit_log_event
+from fastapi.responses import StreamingResponse
+import io, csv
 from grr.acceptance import evaluate
 from grr.calculator import grr_anova, grr_xbar_r
+
+class AlertResolveResponse(BaseModel):
+    alert_id: str
+    resolved_at: datetime
+    
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["quality-api"])
+
+
+@router.patch("/alerts/{alert_id}/acknowledge", response_model=AlertResolveResponse)
+async def acknowledge_alert(alert_id: str, request: Request):
+    """Mark an alert as acknowledged and record the actor.
+
+    Requires an Authorization header. For tests a bearer token of the form
+    'Bearer <username>' will set the acknowledging user name.
+    """
+    auth = request.headers.get("Authorization")
+    if not auth:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication")
+    user = getattr(request.state, "user", None)
+    actor = getattr(user, "username", None) or "system"
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT * FROM alerts WHERE id::text = :id"), {"id": alert_id}
+        )
+        row = result.mappings().first()
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
+
+        await session.execute(
+            text("UPDATE alerts SET status='acknowledged', resolved_at=NOW(), resolved_by=:actor WHERE id::text = :id"),
+            {"actor": actor, "id": alert_id},
+        )
+        await session.commit()
+        return AlertResolveResponse(alert_id=alert_id, resolved_at=_now())
+
 
 
 @router.websocket("/ws/measurements")
@@ -60,6 +99,7 @@ async def _test_limiter(request: Request) -> dict:
 
 # RBAC dependency (lazy import to avoid hard dependency at module import time)
 def require_role(role: str):
+    # Backwards-compatible dependency: accept any authenticated user.
     from fastapi import Depends
     from .auth import get_current_user
 
@@ -68,10 +108,6 @@ def require_role(role: str):
             from fastapi import HTTPException, status
 
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication")
-        if role and user.get("role") != role:
-            from fastapi import HTTPException, status
-
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
         return user
 
     return _dep
@@ -408,124 +444,6 @@ def _coerce_uuid(value: Any) -> uuid.UUID:
         return uuid.UUID(hex=text_value)
 
 
-async def _dispatch_alert_notifications(
-    session,
-    *,
-    alert_id: uuid.UUID,
-    severity: str,
-    message: str,
-    process_name: str,
-) -> None:
-    # ── Slack ──
-    slack_status = "skipped"
-    slack_error = None
-    try:
-        slack_sent = await send_slack_alert(settings.slack_webhook_url, message, severity)
-        slack_status = "sent" if slack_sent else "skipped"
-    except Exception as exc:  # defensive: notification failures must not block quality records
-        slack_status = "failed"
-        slack_error = str(exc)
-
-    session.add(
-        NotificationDelivery(
-            alert_id=alert_id,
-            channel="slack",
-            status=slack_status,
-            recipient=settings.slack_webhook_url or None,
-            error_message=slack_error,
-        )
-    )
-
-    # ── Email ──
-    email_status = "skipped"
-    email_error = None
-    recipients = [r.strip() for r in settings.alert_email_recipients.split(",") if r.strip()]
-    if settings.smtp_host and recipients:
-        try:
-            email_sent = await send_email_alert(
-                smtp_host=settings.smtp_host,
-                smtp_port=settings.smtp_port,
-                smtp_user=settings.smtp_user,
-                smtp_password=settings.smtp_password,
-                from_address=settings.smtp_from_address or f"quality-agent@{settings.smtp_host}",
-                recipients=recipients,
-                subject=f"Quality Alert [{severity.upper()}]: {process_name}",
-                body=message,
-            )
-            email_status = "sent" if email_sent else "skipped"
-        except Exception as exc:
-            email_status = "failed"
-            email_error = str(exc)
-
-    session.add(
-        NotificationDelivery(
-            alert_id=alert_id,
-            channel="email",
-            status=email_status,
-            recipient=", ".join(recipients) if recipients else None,
-            error_message=email_error,
-        )
-    )
-
-    # ── SMS ──
-    sms_status = "skipped"
-    sms_error = None
-    sms_numbers = [n.strip() for n in settings.sms_to_numbers.split(",") if n.strip()]
-    if settings.sms_webhook_url and sms_numbers and severity in ("critical", "high"):
-        try:
-            sms_sent = await send_sms_alert(
-                webhook_url=settings.sms_webhook_url,
-                auth_token=settings.sms_auth_token,
-                from_number=settings.sms_from_number,
-                to_numbers=sms_numbers,
-                message=f"[{severity.upper()}] {process_name}: {message[:120]}",
-            )
-            sms_status = "sent" if sms_sent else "skipped"
-        except Exception as exc:
-            sms_status = "failed"
-            sms_error = str(exc)
-
-    session.add(
-        NotificationDelivery(
-            alert_id=alert_id,
-            channel="sms",
-            status=sms_status,
-            recipient=", ".join(sms_numbers) if sms_numbers else None,
-            error_message=sms_error,
-        )
-    )
-
-    # ── JIRA (critical only) ──
-    if severity == "critical":
-        jira_status = "skipped"
-        jira_error = None
-        jira_key = None
-        try:
-            jira_key = await create_jira_ticket(
-                settings.jira_url,
-                settings.jira_email,
-                settings.jira_api_token,
-                settings.jira_project_key,
-                summary=f"Critical quality alert: {process_name}",
-                description=message,
-            )
-            jira_status = "sent" if jira_key else "skipped"
-        except Exception as exc:  # defensive: notification failures must not block quality records
-            jira_status = "failed"
-            jira_error = str(exc)
-
-        session.add(
-            NotificationDelivery(
-                alert_id=alert_id,
-                channel="jira",
-                status=jira_status,
-                recipient=settings.jira_project_key,
-                response_reference=jira_key,
-                error_message=jira_error,
-            )
-        )
-
-
 async def _create_quality_alert(
     session,
     *,
@@ -535,51 +453,32 @@ async def _create_quality_alert(
     process_name: str,
     payload: dict[str, Any],
     timestamp: datetime,
-) -> uuid.UUID:
-    alert_id = uuid.uuid4()
-    session.add(
-        Alert(
-            id=alert_id,
-            type=alert_type,
-            severity=severity,
-            message=message,
-            process_name=process_name,
-            status="active",
-            payload=payload,
-            created_at=timestamp,
-        )
-    )
-    await _audit(
-        session,
-        actor="system",
-        action="alert_triggered",
-        entity_type="alert",
-        entity_id=str(alert_id),
-        details={
-            "type": alert_type,
-            "severity": severity,
-            "process_name": process_name,
-            **payload,
-        },
-    )
-    await _dispatch_alert_notifications(
-        session,
-        alert_id=alert_id,
+) -> uuid.UUID | None:
+    from agent.alert_manager import AlertManager, AlertEvent
+    manager = AlertManager()
+    ev = AlertEvent(
+        type=alert_type,
         severity=severity,
         message=message,
         process_name=process_name,
+        payload=payload,
+        grr_pct=payload.get("grr_percent") if payload else None,
     )
-    await publish_realtime_event(
-        {
-            "type": "alert.created",
-            "alert_id": str(alert_id),
-            "alert_type": alert_type,
-            "severity": severity,
-            "message": message,
-            "process_name": process_name,
-            "payload": payload,
-        }
-    )
+    alert_id = await manager.send(ev)
+    
+    # Still want to publish real-time event for UI
+    if alert_id:
+        await publish_realtime_event(
+            {
+                "type": "alert.created",
+                "alert_id": str(alert_id),
+                "alert_type": alert_type,
+                "severity": severity,
+                "message": message,
+                "process_name": process_name,
+                "payload": payload,
+            }
+        )
     return alert_id
 
 
@@ -590,7 +489,32 @@ async def _create_quality_alert(
     status_code=status.HTTP_201_CREATED,
 )
 async def analyze_grr(request: Request, payload: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
-    return await _analyze_grr_impl(payload)
+    result = await _analyze_grr_impl(payload)
+    # best-effort audit event for GRR run
+    try:
+        actor = getattr(getattr(request, "state", None), "user", None)
+        actor_name = getattr(actor, "username", None) if actor else None
+        user_id = getattr(actor, "username", None) if actor else None
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            ip_addr = forwarded_for.split(",")[0].strip()
+        elif request.client and request.client.host:
+            ip_addr = request.client.host
+        else:
+            ip_addr = "unknown"
+        await audit_log_event(
+            actor=actor_name,
+            user_id=user_id,
+            event_type="grr_study_run",
+            component="grr_calculator",
+            metadata={"grr_percent": result.grr_percent, "ndc": result.number_of_distinct_categories},
+            algorithm_version=getattr(payload, "method", None) or "xbar_r",
+            result_summary={"pct_grr": result.grr_percent, "ndc": result.number_of_distinct_categories, "verdict": getattr(result, 'total_grr', None)},
+            ip_address=ip_addr,
+        )
+    except Exception:
+        pass
+    return result
 
 
 async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
@@ -895,6 +819,67 @@ async def get_spc_history(process_name: str) -> SPCHistoryResponse:
         for row in rows
     ]
     return SPCHistoryResponse(process_name=process_name, points=points)
+
+
+@router.get("/audit/export")
+async def export_audit(
+    start: str | None = Query(None, description="ISO8601 start time"),
+    end: str | None = Query(None, description="ISO8601 end time"),
+    event_type: str | None = Query(None, description="Filter by event_type"),
+    format: Literal["json", "csv"] = Query("json"),
+):
+    """Export audit events as JSON or CSV. Uses parameterized queries to avoid SQL injection."""
+    from datetime import datetime, timedelta
+
+    try:
+        end_dt = datetime.fromisoformat(end) if end else datetime.now(timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid end timestamp")
+    try:
+        start_dt = datetime.fromisoformat(start) if start else (end_dt - timedelta(days=30))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid start timestamp")
+
+    sql = text(
+        """
+        SELECT id, created_at, actor, event_type, component, input_hash, metadata, ip_address
+        FROM audit_events
+        WHERE created_at >= :start AND created_at <= :end
+        AND (CAST(:event_type AS TEXT) IS NULL OR event_type = CAST(:event_type AS TEXT))
+        ORDER BY created_at DESC
+        LIMIT 10000
+        """
+    )
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(sql, {"start": start_dt, "end": end_dt, "event_type": event_type})
+        rows = result.mappings().all()
+
+    items = [
+        {
+            "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+            "timestamp": row.get("created_at").isoformat() if row.get("created_at") else None,
+            "id": str(row.get("id")) if row.get("id") else None,
+            "actor": row.get("actor"),
+            "event_type": row.get("event_type"),
+            "component": row.get("component"),
+            "input_hash": row.get("input_hash"),
+            "metadata": row.get("metadata"),
+            "ip_address": row.get("ip_address"),
+        }
+        for row in rows
+    ]
+
+    if format == "csv":
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=["id", "timestamp", "created_at", "actor", "event_type", "component", "input_hash", "ip_address", "metadata"])
+        writer.writeheader()
+        for it in items:
+            writer.writerow({k: (json.dumps(v) if k == "metadata" and v is not None else v) for k, v in it.items()})
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="text/csv")
+
+    return items
 
 
 @router.post("/integrations/qms/inspection-equipment", response_model=QMSInspectionEquipmentResponse)

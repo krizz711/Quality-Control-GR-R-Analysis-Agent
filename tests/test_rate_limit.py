@@ -2,9 +2,7 @@ import os
 import asyncio
 
 os.environ.setdefault("API_AUTH_KEY", "test-api-key")
-rate_db = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "test_users_rate.db"))
-os.environ.setdefault("SEED_DB_PATH", rate_db)
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///" + rate_db)
+# Tests must use TEST_DATABASE_URL (Postgres); do not fallback to SQLite.
 
 from fastapi.testclient import TestClient
 

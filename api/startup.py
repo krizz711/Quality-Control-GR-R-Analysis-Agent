@@ -9,7 +9,6 @@ import asyncpg
 from fastapi import FastAPI
 from sqlalchemy.engine import make_url
 
-from agent.consumer import run_consumer
 from api.realtime import state as realtime_state, start_realtime_runtime, stop_realtime_runtime
 from core.config import settings
 from db.database import engine
@@ -66,6 +65,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _initialize_database_schema()
     await start_realtime_runtime()
 
+    try:
+        from agent.consumer import run_consumer
+    except Exception:
+        run_consumer = None
+
     pool = await asyncpg.create_pool(
         dsn=_asyncpg_dsn(),
         min_size=POOL_MIN_SIZE,
@@ -73,15 +77,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     stop_event = asyncio.Event()
-    consumer_task = asyncio.create_task(
-        run_consumer(
-            pool=pool,
-            broadcast_queue=realtime_state.queue,
-            shutdown_event=stop_event,
-            broadcast_sink="queue",
-        ),
-        name="kafka-consumer",
-    )
+    consumer_task = None
+    if run_consumer is not None:
+        consumer_task = asyncio.create_task(
+            run_consumer(
+                pool=pool,
+                broadcast_queue=realtime_state.queue,
+                shutdown_event=stop_event,
+                broadcast_sink="queue",
+            ),
+            name="kafka-consumer",
+        )
     broadcast_task = asyncio.create_task(
         _broadcast_drainer(stop_event),
         name="realtime-broadcast-drainer",
@@ -96,10 +102,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         stop_event.set()
         for task in (consumer_task, broadcast_task):
-            task.cancel()
+            if task is not None:
+                task.cancel()
         await stop_realtime_runtime()
         for task in (consumer_task, broadcast_task):
-            with suppress(asyncio.CancelledError, Exception):
-                await task
+            if task is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
         await pool.close()
         realtime_state.loop = None
