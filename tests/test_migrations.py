@@ -72,8 +72,15 @@ def test_migrations_are_idempotent():
 
 
 def test_downgrade_and_upgrade_roundtrip():
-    down = subprocess.run(["alembic", "downgrade", "-1"], capture_output=True, text=True)
-    assert down.returncode == 0, f"alembic downgrade -1 failed:\n{down.stderr}"
+    # Use an explicit revision rather than -1 to avoid an "Ambiguous walk"
+    # error. Relative steps cannot be resolved when the history graph contains
+    # a merge point (2b2656005ada) with two parents. We step back to the last
+    # linear revision before the branch diverged.
+    down = subprocess.run(
+        ["alembic", "downgrade", "e9501605a8c2"],
+        capture_output=True, text=True,
+    )
+    assert down.returncode == 0, f"alembic downgrade e9501605a8c2 failed:\n{down.stderr}"
 
     up = subprocess.run(["alembic", "upgrade", "head"], capture_output=True, text=True)
     assert up.returncode == 0, f"alembic upgrade head after downgrade failed:\n{up.stderr}"

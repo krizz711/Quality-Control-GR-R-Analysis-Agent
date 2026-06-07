@@ -170,3 +170,17 @@ def mock_slack_client():
         mock_ac.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_ac.return_value.__aexit__ = AsyncMock(return_value=None)
         yield mock_client
+
+
+@pytest.fixture(autouse=True)
+async def cleanup_database_engine():
+    yield
+    import db.database as db_mod
+    if db_mod._engine is not None:
+        try:
+            await db_mod._engine.dispose()
+        except Exception:
+            pass
+        db_mod._engine = None
+        db_mod._AsyncSessionLocal = None
+
