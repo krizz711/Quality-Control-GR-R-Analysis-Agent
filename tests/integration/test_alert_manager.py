@@ -1,17 +1,22 @@
 import asyncio
 import json
+import os
 import uuid
 
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import text
 
 from agent.alert_manager import AlertEvent, AlertManager
 from api.main import app
 from db.models import Alert
 
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def ensure_env(monkeypatch):
@@ -27,6 +32,10 @@ def ensure_env(monkeypatch):
     monkeypatch.setenv("QMS_API_URL", "")
     yield
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _bind_alerting_settings(
     monkeypatch,
@@ -95,18 +104,17 @@ def _mock_llm_explanation(monkeypatch, text=""):
     monkeypatch.setattr(am_mod.AlertManager, "_generate_llm_explanation", _fake)
 
 
-async def _count_rows(session, table_name, alert_id):
-    result = await session.execute(text(f"SELECT count(*) FROM {table_name} WHERE alert_id = :id"), {"id": str(alert_id)})
-    return int(result.scalar_one())
+async def _db() -> asyncpg.Connection:
+    """Open a fresh asyncpg connection for verification queries."""
+    return await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
 
 
-async def _fetch_single_value(session, query, params):
-    result = await session.execute(text(query), params)
-    return result.first()
-
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_slack_alert_dispatched_records_delivery_and_audit(monkeypatch, fake_redis, db_conn):
+async def test_slack_alert_dispatched_records_delivery_and_audit(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch)
     _mock_slack_http(monkeypatch)
     _mock_llm_explanation(monkeypatch, "LLM explanation")
@@ -122,26 +130,33 @@ async def test_slack_alert_dispatched_records_delivery_and_audit(monkeypatch, fa
     alert_id = await manager.send(ev)
 
     assert alert_id is not None
-    alert_row = await _fetch_single_value(
-        db_conn,
-        "SELECT type, severity, message, process_name, status FROM alerts WHERE id = :id",
-        {"id": str(alert_id)},
-    )
-    assert alert_row[0] == "spc_violation"
-    assert alert_row[1] == "critical"
-    assert alert_row[3] == "press-line-1"
-    delivery_count = await _count_rows(db_conn, "notification_deliveries", alert_id)
-    assert delivery_count >= 1
-    audit_count = await _fetch_single_value(
-        db_conn,
-        "SELECT count(*) FROM audit_logs WHERE entity_id = :id AND action = 'send_slack'",
-        {"id": str(alert_id)},
-    )
-    assert int(audit_count[0]) >= 1
+    conn = await _db()
+    try:
+        alert_row = await conn.fetchrow(
+            "SELECT type, severity, message, process_name, status FROM alerts WHERE id = $1",
+            str(alert_id),
+        )
+        assert alert_row["type"] == "spc_violation"
+        assert alert_row["severity"] == "critical"
+        assert alert_row["process_name"] == "press-line-1"
+
+        delivery_count = await conn.fetchval(
+            "SELECT count(*) FROM notification_deliveries WHERE alert_id = $1",
+            str(alert_id),
+        )
+        assert int(delivery_count) >= 1
+
+        audit_count = await conn.fetchval(
+            "SELECT count(*) FROM audit_logs WHERE entity_id = $1 AND action = 'send_slack'",
+            str(alert_id),
+        )
+        assert int(audit_count) >= 1
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_slack_retry_on_failure(monkeypatch, fake_redis, db_conn):
+async def test_slack_retry_on_failure(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch)
     _mock_llm_explanation(monkeypatch, "")
 
@@ -157,17 +172,20 @@ async def test_slack_retry_on_failure(monkeypatch, fake_redis, db_conn):
     alert_id = await manager.send(ev)
 
     assert mock_client.post.call_count == 2
-    delivery = await _fetch_single_value(
-        db_conn,
-        "SELECT channel, status FROM notification_deliveries WHERE alert_id = :id AND channel = 'slack'",
-        {"id": str(alert_id)},
-    )
-    assert delivery[0] == "slack"
-    assert delivery[1] == "sent"
+    conn = await _db()
+    try:
+        delivery = await conn.fetchrow(
+            "SELECT channel, status FROM notification_deliveries WHERE alert_id = $1 AND channel = 'slack'",
+            str(alert_id),
+        )
+        assert delivery["channel"] == "slack"
+        assert delivery["status"] == "sent"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_slack_all_retries_exhausted_logs_failure(monkeypatch, fake_redis, db_conn):
+async def test_slack_all_retries_exhausted_logs_failure(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch)
     _mock_llm_explanation(monkeypatch, "")
 
@@ -180,17 +198,20 @@ async def test_slack_all_retries_exhausted_logs_failure(monkeypatch, fake_redis,
     alert_id = await manager.send(ev)
 
     assert mock_client.post.call_count == 5
-    delivery = await _fetch_single_value(
-        db_conn,
-        "SELECT channel, status FROM notification_deliveries WHERE alert_id = :id AND channel = 'slack'",
-        {"id": str(alert_id)},
-    )
-    assert delivery[0] == "slack"
-    assert delivery[1] == "failed"
+    conn = await _db()
+    try:
+        delivery = await conn.fetchrow(
+            "SELECT channel, status FROM notification_deliveries WHERE alert_id = $1 AND channel = 'slack'",
+            str(alert_id),
+        )
+        assert delivery["channel"] == "slack"
+        assert delivery["status"] == "failed"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_email_alert_dispatched_records_delivery(monkeypatch, fake_redis, db_conn):
+async def test_email_alert_dispatched_records_delivery(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch, enable_slack=False, enable_email=True)
     _mock_llm_explanation(monkeypatch, "")
 
@@ -212,18 +233,21 @@ async def test_email_alert_dispatched_records_delivery(monkeypatch, fake_redis, 
     alert_id = await manager.send(ev)
 
     assert len(calls) == 1
-    email_delivery = await _fetch_single_value(
-        db_conn,
-        "SELECT channel, status, recipient FROM notification_deliveries WHERE alert_id = :id AND channel = 'email'",
-        {"id": str(alert_id)},
-    )
-    assert email_delivery[0] == "email"
-    assert email_delivery[1] == "sent"
-    assert "qa@example.com" in email_delivery[2]
+    conn = await _db()
+    try:
+        email_delivery = await conn.fetchrow(
+            "SELECT channel, status, recipient FROM notification_deliveries WHERE alert_id = $1 AND channel = 'email'",
+            str(alert_id),
+        )
+        assert email_delivery["channel"] == "email"
+        assert email_delivery["status"] == "sent"
+        assert "qa@example.com" in email_delivery["recipient"]
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_sms_alert_only_for_critical(monkeypatch, fake_redis, db_conn):
+async def test_sms_alert_only_for_critical(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch, enable_slack=False, enable_sms=True)
     _mock_llm_explanation(monkeypatch, "")
 
@@ -240,17 +264,20 @@ async def test_sms_alert_only_for_critical(monkeypatch, fake_redis, db_conn):
     alert_id = await manager.send(ev)
 
     assert len(sms_calls) == 1
-    sms_delivery = await _fetch_single_value(
-        db_conn,
-        "SELECT channel, status FROM notification_deliveries WHERE alert_id = :id AND channel = 'sms'",
-        {"id": str(alert_id)},
-    )
-    assert sms_delivery[0] == "sms"
-    assert sms_delivery[1] == "sent"
+    conn = await _db()
+    try:
+        sms_delivery = await conn.fetchrow(
+            "SELECT channel, status FROM notification_deliveries WHERE alert_id = $1 AND channel = 'sms'",
+            str(alert_id),
+        )
+        assert sms_delivery["channel"] == "sms"
+        assert sms_delivery["status"] == "sent"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_jira_ticket_created_with_llm_summary(monkeypatch, fake_redis, db_conn):
+async def test_jira_ticket_created_with_llm_summary(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch, enable_slack=False, enable_jira=True)
     _mock_llm_explanation(monkeypatch, "LLM summary for GRR")
 
@@ -273,18 +300,21 @@ async def test_jira_ticket_created_with_llm_summary(monkeypatch, fake_redis, db_
 
     assert len(jira_calls) == 1
     assert "LLM summary for GRR" in jira_calls[0]["description"]
-    jira_delivery = await _fetch_single_value(
-        db_conn,
-        "SELECT channel, status, response_reference FROM notification_deliveries WHERE alert_id = :id AND channel = 'jira'",
-        {"id": str(alert_id)},
-    )
-    assert jira_delivery[0] == "jira"
-    assert jira_delivery[1] == "created"
-    assert jira_delivery[2] == "QUAL-42"
+    conn = await _db()
+    try:
+        jira_delivery = await conn.fetchrow(
+            "SELECT channel, status, response_reference FROM notification_deliveries WHERE alert_id = $1 AND channel = 'jira'",
+            str(alert_id),
+        )
+        assert jira_delivery["channel"] == "jira"
+        assert jira_delivery["status"] == "created"
+        assert jira_delivery["response_reference"] == "QUAL-42"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_jira_not_created_for_warning(monkeypatch, fake_redis, db_conn):
+async def test_jira_not_created_for_warning(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch, enable_slack=False, enable_jira=True)
     _mock_llm_explanation(monkeypatch, "")
 
@@ -301,15 +331,19 @@ async def test_jira_not_created_for_warning(monkeypatch, fake_redis, db_conn):
     alert_id = await manager.send(ev)
 
     assert not called
-    jira_delivery = await db_conn.execute(
-        text("SELECT count(*) FROM notification_deliveries WHERE alert_id = :id AND channel = 'jira'"),
-        {"id": str(alert_id)},
-    )
-    assert int(jira_delivery.scalar_one()) == 0
+    conn = await _db()
+    try:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM notification_deliveries WHERE alert_id = $1 AND channel = 'jira'",
+            str(alert_id),
+        )
+        assert int(count) == 0
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_qms_integration_posts_results_and_logs_delivery(monkeypatch, fake_redis, db_conn):
+async def test_qms_integration_posts_results_and_logs_delivery(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch, enable_slack=False, enable_qms=True)
     _mock_llm_explanation(monkeypatch, "")
 
@@ -341,17 +375,20 @@ async def test_qms_integration_posts_results_and_logs_delivery(monkeypatch, fake
     alert_id = await manager.send(ev)
 
     assert qms_client.post.call_count == 1
-    qms_delivery = await _fetch_single_value(
-        db_conn,
-        "SELECT channel, status FROM notification_deliveries WHERE alert_id = :id AND channel = 'qms'",
-        {"id": str(alert_id)},
-    )
-    assert qms_delivery[0] == "qms"
-    assert qms_delivery[1] == "sent"
+    conn = await _db()
+    try:
+        qms_delivery = await conn.fetchrow(
+            "SELECT channel, status FROM notification_deliveries WHERE alert_id = $1 AND channel = 'qms'",
+            str(alert_id),
+        )
+        assert qms_delivery["channel"] == "qms"
+        assert qms_delivery["status"] == "sent"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_redis_deduplication_blocks_second_send(monkeypatch, fake_redis, db_conn):
+async def test_redis_deduplication_blocks_second_send(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch)
     _mock_llm_explanation(monkeypatch, "")
     mock_client = _mock_slack_http(monkeypatch)
@@ -366,15 +403,19 @@ async def test_redis_deduplication_blocks_second_send(monkeypatch, fake_redis, d
     assert first_id is not None
     assert second_id is None
     assert mock_client.post.call_count == 1
-    count_result = await db_conn.execute(
-        text("SELECT count(*) FROM alerts WHERE process_name = :name AND message = :msg"),
-        {"name": unique_process, "msg": unique_message},
-    )
-    assert int(count_result.scalar_one()) >= 1
+    conn = await _db()
+    try:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM alerts WHERE process_name = $1 AND message = $2",
+            unique_process, unique_message,
+        )
+        assert int(count) >= 1
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
-async def test_deduplication_resets_after_ttl(monkeypatch, fake_redis, db_conn):
+async def test_deduplication_resets_after_ttl(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch)
     _mock_llm_explanation(monkeypatch, "")
     mock_client = _mock_slack_http(monkeypatch)
@@ -388,13 +429,20 @@ async def test_deduplication_resets_after_ttl(monkeypatch, fake_redis, db_conn):
 
 
 @pytest.mark.asyncio
-async def test_acknowledge_endpoint_updates_real_alert(db_conn):
-    alert_id = uuid.uuid4()
-    db_conn.add(Alert(id=alert_id, type="spc_violation", severity="critical", message="ack test", process_name="press-line-1"))
-    await db_conn.commit()
-
+async def test_acknowledge_endpoint_updates_real_alert():
     from httpx import ASGITransport
     from api.auth import create_access_token
+
+    alert_id = uuid.uuid4()
+    # Insert the alert directly via asyncpg
+    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        await conn.execute(
+            "INSERT INTO alerts (id, type, severity, message, process_name, status) VALUES ($1,$2,$3,$4,$5,$6)",
+            str(alert_id), "spc_violation", "critical", "ack test", "press-line-1", "active",
+        )
+    finally:
+        await conn.close()
 
     jwt_token = create_access_token({"sub": "test-user"})
 
@@ -407,10 +455,15 @@ async def test_acknowledge_endpoint_updates_real_alert(db_conn):
     assert response.status_code == 200
     assert response.json()["alert_id"] == str(alert_id)
 
-    row = await db_conn.execute(text("SELECT status, resolved_by FROM alerts WHERE id = :id"), {"id": str(alert_id)})
-    status_row = row.first()
-    assert status_row[0] == "acknowledged"
-    assert status_row[1] == "test-user"
+    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        row = await conn.fetchrow(
+            "SELECT status, resolved_by FROM alerts WHERE id = $1", str(alert_id)
+        )
+        assert row["status"] == "acknowledged"
+        assert row["resolved_by"] == "test-user"
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio
@@ -423,7 +476,7 @@ async def test_acknowledge_requires_auth():
 
 
 @pytest.mark.asyncio
-async def test_alert_accuracy_benchmark(monkeypatch, fake_redis, db_conn):
+async def test_alert_accuracy_benchmark(monkeypatch, fake_redis):
     _bind_alerting_settings(monkeypatch)
     _mock_llm_explanation(monkeypatch, "")
     _mock_slack_http(monkeypatch)
@@ -433,16 +486,19 @@ async def test_alert_accuracy_benchmark(monkeypatch, fake_redis, db_conn):
     false_pos = 0
     unique_process = f"proc-{uuid.uuid4().hex[:8]}"
 
-    for _ in range(100):
-        pass
-
     for i in range(20):
         ev = AlertEvent(type="spc_violation", severity="critical", message=f"bad {i} {uuid.uuid4().hex[:6]}", process_name=unique_process)
         await manager.send(ev)
         true_pos += 1
 
-    count_result = await db_conn.execute(text("SELECT count(*) FROM alerts WHERE process_name = :name"), {"name": unique_process})
-    assert int(count_result.scalar_one()) >= 20
+    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM alerts WHERE process_name = $1", unique_process
+        )
+        assert int(count) >= 20
+    finally:
+        await conn.close()
 
     precision = true_pos / (true_pos + false_pos)
     fp_rate = false_pos / 100
