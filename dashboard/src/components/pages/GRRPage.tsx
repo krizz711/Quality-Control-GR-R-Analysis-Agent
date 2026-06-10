@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import {
   AlertCircle,
@@ -19,6 +20,7 @@ import {
   Upload,
   Wand2,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   showToast,
   submitGRRAnalysis,
@@ -155,18 +157,32 @@ function GaugeChart({ value }: { value: number }) {
           WebkitMask: "radial-gradient(circle at center, transparent 54%, black 55%)",
         }}
       />
-      <div className="absolute inset-6 rounded-full bg-slate-900 shadow-inner shadow-black/40" />
-      <div
-        className="absolute left-1/2 top-1/2 h-[92px] w-1 origin-bottom rounded-full bg-slate-100"
-        style={{ transform: `translate(-50%, -100%) rotate(${angle}deg)` }}
+      <div className="absolute inset-6 rounded-full bg-[var(--bg-root)] shadow-inner shadow-black/60" />
+      {/* Animated needle */}
+      <motion.div
+        className="absolute left-1/2 top-1/2 h-[92px] w-0.5 origin-bottom rounded-full bg-[var(--text-primary)]"
+        style={{ x: "-50%", y: "-100%" }}
+        initial={{ rotate: -90 }}
+        animate={{ rotate: angle }}
+        transition={{ type: "spring", stiffness: 80, damping: 18, delay: 0.25 }}
       />
-      <div
-        className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-slate-950"
+      <motion.div
+        className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[var(--bg-root)]"
+        initial={{ scale: 0 }}
+        animate={{ scale: 1 }}
+        transition={{ type: "spring", stiffness: 300, damping: 20, delay: 0.2 }}
         style={{ background: color }}
       />
       <div className="absolute inset-x-0 bottom-10 text-center">
-        <div className="text-4xl font-semibold text-slate-50">{clamped.toFixed(1)}%</div>
-        <div className="mt-2 text-xs uppercase tracking-[0.24em] text-slate-500">GR&R</div>
+        <motion.div
+          className="text-4xl font-semibold text-[var(--text-primary)] tabular-nums"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.4 }}
+        >
+          {clamped.toFixed(1)}%
+        </motion.div>
+        <div className="mt-1.5 text-[10px] uppercase tracking-widest text-[var(--text-muted)]">GR&R</div>
       </div>
     </div>
   );
@@ -313,73 +329,48 @@ export default function GRRPage() {
     setLastSavedAt(new Date());
   };
 
-  const exportPdf = () => {
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  const exportPdf = async () => {
     if (!currentAnalysis) {
-      showToast("Run an analysis before exporting the report.");
+      toast("Run an analysis before exporting the report.");
       return;
     }
 
-    const popup = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
-    if (!popup) {
-      showToast("Popup blocked. Allow popups to export the report.");
-      return;
+    setExportingPdf(true);
+    const toastId = toast.loading("Generating PDF report…");
+
+    try {
+      const [{ pdf }, { GRRPdfReport }] = await Promise.all([
+        import("@react-pdf/renderer"),
+        import("@/components/reports/GRRPdfReport"),
+      ]);
+
+      const blob = await pdf(
+        GRRPdfReport({
+          analysis: currentAnalysis,
+          processName: processName || "Unnamed Process",
+          operators,
+          parts,
+          trials,
+          partTolerance,
+        })
+      ).toBlob();
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `grr-${(processName || "report").toLowerCase().replace(/\s+/g, "-")}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      toast.success("Report downloaded.", { id: toastId });
+    } catch (err) {
+      console.error("PDF generation failed:", err);
+      toast.error("PDF generation failed. Check console for details.", { id: toastId });
+    } finally {
+      setExportingPdf(false);
     }
-
-    const reportTitle = `${processName || "GR&R"} Report`;
-    const reportHtml = `
-      <!doctype html>
-      <html>
-        <head>
-          <title>${reportTitle}</title>
-          <style>
-            body { font-family: Arial, sans-serif; margin: 32px; color: #111827; }
-            h1 { margin: 0 0 8px; font-size: 28px; }
-            .muted { color: #6b7280; }
-            .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
-            .card { border: 1px solid #e5e7eb; border-radius: 14px; padding: 16px; }
-            .label { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7280; margin-bottom: 6px; }
-            .value { font-size: 22px; font-weight: 700; }
-            .full { grid-column: 1 / -1; }
-            pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; margin: 0; }
-          </style>
-        </head>
-        <body>
-          <h1>${reportTitle}</h1>
-          <div class="muted">Generated ${new Date().toLocaleString()}</div>
-          <div class="grid">
-            <div class="card">
-              <div class="label">GR&R %</div>
-              <div class="value">${currentAnalysis.grr_percent.toFixed(1)}%</div>
-            </div>
-            <div class="card">
-              <div class="label">Verdict</div>
-              <div class="value">${verdict ?? grrVerdict(currentAnalysis.grr_percent)}</div>
-            </div>
-            <div class="card">
-              <div class="label">Repeatability</div>
-              <div class="value">${currentAnalysis.repeatability.toFixed(4)}</div>
-            </div>
-            <div class="card">
-              <div class="label">Reproducibility</div>
-              <div class="value">${currentAnalysis.reproducibility.toFixed(4)}</div>
-            </div>
-            <div class="card full">
-              <div class="label">AI Analysis</div>
-              <pre>${currentAnalysis.ai_analysis}</pre>
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
-
-    popup.document.open();
-    popup.document.write(reportHtml);
-    popup.document.close();
-    popup.focus();
-    popup.onload = () => {
-      popup.print();
-      popup.onafterprint = () => popup.close();
-    };
   };
 
   return (
@@ -436,8 +427,16 @@ export default function GRRPage() {
 
         <form onSubmit={handleSubmit(runAnalysis)} className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-6">
+            <AnimatePresence mode="wait">
             {step === 1 && (
-              <section className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+              <motion.section
+                key="step1"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]"
+              >
                 <SectionHeader
                   icon={<Wand2 size={16} />}
                   title="Step 1 - Setup"
@@ -526,11 +525,18 @@ export default function GRRPage() {
                   </button>
                   <div className="text-xs text-slate-500">Defaults: 3 operators, 10 parts, 2 trials</div>
                 </div>
-              </section>
+              </motion.section>
             )}
 
             {step === 2 && (
-              <section className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+              <motion.section
+                key="step2"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]"
+              >
                 <SectionHeader
                   icon={<FileUp size={16} />}
                   title="Step 2 - Data Entry"
@@ -652,11 +658,18 @@ export default function GRRPage() {
                     Proceed to Analysis <ArrowRight size={16} />
                   </button>
                 </div>
-              </section>
+              </motion.section>
             )}
 
             {step === 3 && (
-              <section className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+              <motion.section
+                key="step3"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]"
+              >
                 <SectionHeader
                   icon={<Gauge size={16} />}
                   title="Step 3 - Analysis"
@@ -760,10 +773,13 @@ export default function GRRPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={exportPdf}
-                          className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
+                          onClick={() => void exportPdf()}
+                          disabled={exportingPdf}
+                          className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          <Download size={16} /> Export PDF Report
+                          {exportingPdf
+                            ? <><Loader2 size={16} className="animate-spin" /> Generating…</>
+                            : <><Download size={16} /> Export PDF Report</>}
                         </button>
                         <button
                           type="button"
@@ -786,8 +802,9 @@ export default function GRRPage() {
                     <p className="mt-1 text-sm text-slate-500">Run the GR&R calculation after confirming the table data.</p>
                   </div>
                 )}
-              </section>
+              </motion.section>
             )}
+            </AnimatePresence>
           </div>
 
           <aside className="space-y-6">

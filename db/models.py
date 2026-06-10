@@ -172,12 +172,31 @@ class User(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
 
 
+class ConversationSession(Base):
+    """Persistent multi-turn chat context per user."""
+
+    __tablename__ = "conversation_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    turns: Mapped[list | None] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+    last_active: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    )
+
+
 __all__ = [
     "Alert",
     "AlertFeedback",
     "AuditLog",
     "AuditEvent",
     "Base",
+    "ConversationSession",
     "GrrStudy",
     "Measurement",
     "NotificationDelivery",

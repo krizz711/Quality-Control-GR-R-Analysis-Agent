@@ -30,7 +30,8 @@ config = context.config
 # make sure the alembic Config uses it as the main sqlalchemy.url so both
 # CLI and programmatic invocation pick it up.
 if os.environ.get("DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", os.environ.get("DATABASE_URL"))
+    # configparser treats % as interpolation syntax — escape it before storing
+    config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"].replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

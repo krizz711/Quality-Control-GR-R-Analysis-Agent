@@ -469,9 +469,16 @@ async def test_acknowledge_endpoint_updates_real_alert():
 @pytest.mark.asyncio
 async def test_acknowledge_requires_auth():
     from httpx import ASGITransport
+    import os
 
+    # Use the real API key so we pass the API-key gate, but omit Authorization
+    # so the endpoint's own JWT/auth check fires and returns 401.
+    api_key = os.environ.get("API_AUTH_KEY", "test-api-key")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-        response = await client.patch("/api/v1/alerts/not-found/acknowledge", headers={"x-api-key": "test-api-key"})
+        response = await client.patch(
+            "/api/v1/alerts/not-found/acknowledge",
+            headers={"x-api-key": api_key},
+        )
     assert response.status_code == 401
 
 

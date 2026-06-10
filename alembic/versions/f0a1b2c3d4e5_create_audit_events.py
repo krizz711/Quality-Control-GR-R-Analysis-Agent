@@ -17,19 +17,23 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
-    op.create_table(
-        'audit_events',
-        sa.Column('id', sa.UUID(), primary_key=True),
-        sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=sa.text('now()'), primary_key=True),
-        sa.Column('actor', sa.String(length=128), nullable=True),
-        sa.Column('user_id', sa.String(length=128), nullable=True),
-        sa.Column('event_type', sa.String(length=128), nullable=False),
-        sa.Column('component', sa.String(length=128), nullable=True),
-        sa.Column('input_hash', sa.String(length=128), nullable=True),
-        sa.Column('algorithm_version', sa.String(length=64), nullable=True),
-        sa.Column('result_summary', sa.JSON(), nullable=True),
-        sa.Column('metadata', sa.JSON(), nullable=True),
-        sa.Column('ip_address', sa.String(length=64), nullable=True),
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id UUID NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+            actor VARCHAR(128),
+            user_id VARCHAR(128),
+            event_type VARCHAR(128) NOT NULL,
+            component VARCHAR(128),
+            input_hash VARCHAR(128),
+            algorithm_version VARCHAR(64),
+            result_summary JSON,
+            metadata JSON,
+            ip_address VARCHAR(64),
+            PRIMARY KEY (id, created_at)
+        )
+        """
     )
     op.execute(
         "SELECT create_hypertable('audit_events', 'created_at', if_not_exists => TRUE, migrate_data => TRUE)"

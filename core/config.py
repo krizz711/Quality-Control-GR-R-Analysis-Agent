@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # ML Tool adapter selection (mlflow | gemini)
     ml_tool_name: str = "mlflow"
 
+    # Feature flags
+    # Prophet has large dependencies (~500 MB). Ship behind this flag so the
+    # base Docker image stays lean. Set ENABLE_PROPHET=true to unlock.
+    enable_prophet: bool = False
+
     # Dashboard URL for email alert links
     dashboard_url: str = "http://localhost:3000"
 

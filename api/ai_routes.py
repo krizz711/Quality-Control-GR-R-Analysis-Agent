@@ -18,7 +18,9 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -31,6 +33,8 @@ from agent.llm_analyst import (
     generate_predictive_insight,
     interpret_spc_violations,
 )
+from agent.adapters.registry import get_adapter
+from api.rate_limit import limiter
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import GrrStudy
@@ -105,6 +109,21 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     context_used: list[str]  # which data sources were included
+
+
+class PredictionForecast(BaseModel):
+    process_id: str
+    characteristic_name: str
+    measurement_count: int
+    cusum_shift_detected: bool
+    cusum_violation_indices: list[int]
+    ewma_trend_detected: bool
+    ewma_violation_indices: list[int]
+    predicted_breach_in: int | None  # observations until predicted UCL/LCL breach
+    drift_direction: str             # "upward" | "downward" | "none"
+    confidence_interval: dict[str, float]  # {"lower": ..., "upper": ...}
+    suggested_action: str
+    model_run_id: str                # MLflow run ID (empty string if unavailable)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -203,7 +222,8 @@ async def _build_system_context() -> dict[str, Any]:
         "risk assessment. Study must already exist in the database."
     ),
 )
-async def get_grr_narrative(study_id: str) -> GRRNarrativeResponse:
+@limiter.limit("20/minute")
+async def get_grr_narrative(request: Request, study_id: str) -> GRRNarrativeResponse:
     api_key = _check_api_key()
     study = await _load_study(study_id)
 
@@ -256,7 +276,8 @@ async def get_grr_narrative(study_id: str) -> GRRNarrativeResponse:
     description="Generates and returns a PDF report for the specified study. Fixes the NotImplementedError in the base orchestrator.",
     response_class=Response,
 )
-async def download_grr_report(study_id: str) -> Response:
+@limiter.limit("30/minute")
+async def download_grr_report(request: Request, study_id: str) -> Response:
     """
     Generate a PDF report for a completed GR&R study.
     Returns raw PDF bytes with appropriate Content-Disposition header.
@@ -328,7 +349,9 @@ async def download_grr_report(study_id: str) -> Response:
         "interpretation with likely root causes and recommended actions."
     ),
 )
-async def interpret_spc(body: SPCInterpretRequest) -> SPCInterpretResponse:
+@limiter.limit("20/minute")
+async def interpret_spc(request: Request) -> SPCInterpretResponse:
+    body = SPCInterpretRequest.model_validate(await request.json())
     api_key = _check_api_key()
 
     narrative: SPCNarrative = await interpret_spc_violations(
@@ -359,7 +382,9 @@ async def interpret_spc(body: SPCInterpretRequest) -> SPCInterpretResponse:
         "before Nelson rules fire. Acts as an early-warning system."
     ),
 )
-async def predict_violations(body: PredictRequest) -> PredictResponse:
+@limiter.limit("20/minute")
+async def predict_violations(request: Request) -> PredictResponse:
+    body = PredictRequest.model_validate(await request.json())
     api_key = _check_api_key()
 
     insight: PredictiveInsight = await generate_predictive_insight(
@@ -390,7 +415,9 @@ async def predict_violations(body: PredictRequest) -> PredictResponse:
         "and pending reviews. Maintains conversation context across turns."
     ),
 )
-async def chat_with_agent(body: ChatRequest) -> ChatResponse:
+@limiter.limit("30/minute")
+async def chat_with_agent(request: Request) -> ChatResponse:
+    body = ChatRequest.model_validate(await request.json())
     api_key = _check_api_key()
 
     # Load live system context (or use override for testing)
@@ -411,3 +438,158 @@ async def chat_with_agent(body: ChatRequest) -> ChatResponse:
     )
 
     return ChatResponse(answer=answer, context_used=context_sources)
+
+
+@router.get(
+    "/predictions/{process_id}",
+    response_model=PredictionForecast,
+    summary="Statistical prediction forecast for a process",
+    description=(
+        "Runs CUSUM and EWMA detection on recent measurement history for the "
+        "given process (part_number). Returns predicted breach timing, drift "
+        "direction, confidence interval, and a suggested action. All prediction "
+        "runs are logged to MLflow under experiment 'spc_predictions'."
+    ),
+)
+@limiter.limit("30/minute")
+async def get_process_predictions(
+    request: Request,
+    process_id: str,
+    characteristic: str = Query(default="", description="Characteristic name filter (optional)"),
+    window: int = Query(default=30, ge=5, le=200, description="Number of recent measurements to use"),
+) -> PredictionForecast:
+    """
+    Statistical prediction endpoint — no LLM calls, pure SPC math.
+
+    1. Pull last `window` measurements from TimescaleDB for `process_id`.
+    2. Compute I-MR control limits.
+    3. Run CUSUM (shift detection) and EWMA (trend detection).
+    4. Extrapolate linear trend to predict breach timing.
+    5. Log prediction run to MLflow.
+    6. Return structured forecast with suggested action.
+    """
+    import numpy as np
+    from spc.control_charts import individuals_mr_chart
+    from spc.cusum import cusum_from_limits
+    from spc.ewma import ewma_from_limits
+    from spc.anomaly_detector import linear_trend_extrapolation
+
+    # ── 1. Load measurement history ───────────────────────────────────────────
+    query_params: dict[str, Any] = {"pn": process_id, "window": window}
+    sql = """
+        SELECT measured_value, characteristic_name
+        FROM measurements
+        WHERE part_number = :pn
+    """
+    if characteristic:
+        sql += " AND characteristic_name = :cn"
+        query_params["cn"] = characteristic
+
+    sql += " ORDER BY timestamp DESC LIMIT :window"
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text(sql), query_params)
+        rows = result.mappings().all()
+
+    if len(rows) < 5:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Insufficient measurement history for '{process_id}' "
+                f"(found {len(rows)}, need ≥5). Collect more data first."
+            ),
+        )
+
+    values = list(reversed([float(r["measured_value"]) for r in rows]))
+    char_name = rows[0]["characteristic_name"] if rows else (characteristic or "unknown")
+    vals_arr = np.asarray(values, dtype=float)
+
+    # ── 2. Compute control limits via I-MR chart ──────────────────────────────
+    i_chart, _ = individuals_mr_chart(values)
+    ucl = i_chart.limits.ucl
+    lcl = i_chart.limits.lcl
+    cl = i_chart.limits.cl
+    sigma = i_chart.limits.sigma
+
+    # ── 3. CUSUM + EWMA detection ─────────────────────────────────────────────
+    cusum_result = cusum_from_limits(vals_arr, ucl, lcl)
+    ewma_result = ewma_from_limits(vals_arr, ucl, lcl)
+
+    # ── 4. Linear trend extrapolation ────────────────────────────────────────
+    slope, drift_direction, obs_until = linear_trend_extrapolation(vals_arr, ucl, lcl)
+
+    # Confidence interval: mean ± 2*sigma of recent 10 points
+    recent = vals_arr[-10:]
+    ci_mean = float(recent.mean())
+    ci_half = 2.0 * sigma
+    confidence_interval = {
+        "lower": round(ci_mean - ci_half, 6),
+        "upper": round(ci_mean + ci_half, 6),
+    }
+
+    # ── 5. Suggested action ───────────────────────────────────────────────────
+    if cusum_result.shift_detected:
+        suggested_action = (
+            f"STOP — CUSUM detected a sustained process shift "
+            f"({cusum_result.shift_direction}) at measurement index "
+            f"{cusum_result.first_signal_index}. Investigate assignable cause immediately."
+        )
+    elif ewma_result.shift_detected:
+        suggested_action = (
+            f"WARNING — EWMA trend detected ({ewma_result.drift_direction}). "
+            f"Adjust process parameters before next {obs_until or '?'} measurements."
+        )
+    elif obs_until is not None and obs_until <= 10:
+        suggested_action = (
+            f"CAUTION — Linear trend predicts control limit breach in ~{obs_until} "
+            f"measurements ({drift_direction}). Schedule preventive maintenance."
+        )
+    else:
+        suggested_action = "Process is in statistical control. Continue routine monitoring."
+
+    # ── 6. Log to MLflow ──────────────────────────────────────────────────────
+    run_id = ""
+    try:
+        adapter = get_adapter()
+        run_id = await adapter.log_experiment(
+            experiment_name="spc_predictions",
+            run_name=f"{process_id}_{char_name}",
+            params={
+                "model_type": "cusum+ewma",
+                "input_window": len(values),
+                "process_id": process_id,
+                "characteristic": char_name,
+            },
+            metrics={
+                "cusum_violations": float(len(cusum_result.shift_indices)),
+                "ewma_violations": float(len(ewma_result.violation_indices)),
+                "trend_slope": round(float(slope), 6),
+                "obs_until_breach": float(obs_until) if obs_until is not None else -1.0,
+            },
+            tags={
+                "shift_detected": str(cusum_result.shift_detected),
+                "drift_direction": drift_direction,
+                "suggested_action_level": (
+                    "critical" if cusum_result.shift_detected
+                    else "warning" if ewma_result.shift_detected
+                    else "ok"
+                ),
+            },
+        )
+    except Exception:
+        logger.warning("MLflow logging failed for prediction run (non-fatal)", exc_info=True)
+
+    return PredictionForecast(
+        process_id=process_id,
+        characteristic_name=char_name,
+        measurement_count=len(values),
+        cusum_shift_detected=cusum_result.shift_detected,
+        cusum_violation_indices=cusum_result.shift_indices,
+        ewma_trend_detected=ewma_result.shift_detected,
+        ewma_violation_indices=ewma_result.violation_indices,
+        predicted_breach_in=obs_until,
+        drift_direction=drift_direction,
+        confidence_interval=confidence_interval,
+        suggested_action=suggested_action,
+        model_run_id=run_id,
+    )

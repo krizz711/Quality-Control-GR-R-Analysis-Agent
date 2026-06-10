@@ -18,7 +18,7 @@ from sqlalchemy import text
 
 from backend.services import gemini_service as geminiService
 from api.rate_limit import limiter
-from api.realtime import publish_realtime_event, state as realtime_state
+from api.realtime import authenticate_websocket, publish_realtime_event, state as realtime_state
 from core.config import settings
 from db.database import AsyncSessionLocal
 from db.models import Alert, AlertFeedback, AuditLog, GrrStudy, Measurement, NotificationDelivery
@@ -71,6 +71,8 @@ async def acknowledge_alert(alert_id: str, request: Request):
 
 @router.websocket("/ws/measurements")
 async def websocket_measurements(websocket: WebSocket) -> None:
+    if not await authenticate_websocket(websocket):
+        return
     await realtime_state.manager.connect(websocket)
     try:
         while True:
