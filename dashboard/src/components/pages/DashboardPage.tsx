@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -10,13 +11,22 @@ import {
   Database,
   FileText,
   Loader2,
-  Plus,
   RefreshCw,
   Radar,
-  Server,
   ShieldAlert,
   Activity,
+  TrendingUp,
 } from "lucide-react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   getAlerts,
   getAuditLog,
@@ -58,16 +68,25 @@ const VERDICT_STYLES: Record<GRRHistoryItem["verdict"], string> = {
   fail: "bg-rose-500/15 text-rose-300 border-rose-500/25",
 };
 
+const VERDICT_DOT: Record<GRRHistoryItem["verdict"], string> = {
+  pass: "#34d399",
+  acceptable: "#fbbf24",
+  fail: "#f87171",
+};
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
+};
+const cardVariants = {
+  hidden: { opacity: 0, y: 12 },
+  show: { opacity: 1, y: 0, transition: { type: "spring" as const, stiffness: 380, damping: 28 } },
+};
+
 function formatTimestamp(value?: string | null) {
-  if (!value) {
-    return "—";
-  }
-
+  if (!value) return "—";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
@@ -76,16 +95,17 @@ function formatTimestamp(value?: string | null) {
   }).format(date);
 }
 
+function formatShortDate(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
+}
+
 function formatRelativeTrend(current: number, previous: number) {
-  if (!previous) {
-    return { label: "New baseline", direction: "flat" as const };
-  }
-
+  if (!previous) return { label: "New baseline", direction: "flat" as const };
   const delta = ((current - previous) / previous) * 100;
-  if (Math.abs(delta) < 1) {
-    return { label: "Flat vs last week", direction: "flat" as const };
-  }
-
+  if (Math.abs(delta) < 1) return { label: "Flat vs last week", direction: "flat" as const };
   return {
     label: `${delta > 0 ? "+" : ""}${delta.toFixed(0)}% vs last week`,
     direction: delta > 0 ? ("up" as const) : ("down" as const),
@@ -93,41 +113,45 @@ function formatRelativeTrend(current: number, previous: number) {
 }
 
 function getPassRateTone(passRate: number) {
-  if (passRate > 70) {
-    return "text-emerald-300 border-emerald-500/25 bg-emerald-500/10";
-  }
-
-  if (passRate >= 40) {
-    return "text-amber-300 border-amber-500/25 bg-amber-500/10";
-  }
-
+  if (passRate > 70) return "text-emerald-300 border-emerald-500/25 bg-emerald-500/10";
+  if (passRate >= 40) return "text-amber-300 border-amber-500/25 bg-amber-500/10";
   return "text-rose-300 border-rose-500/25 bg-rose-500/10";
 }
 
 function getSeverityTone(severity?: AlertItem["severity"]) {
   switch (severity) {
-    case "critical":
-      return "text-rose-300 bg-rose-500/10 border-rose-500/20";
-    case "high":
-      return "text-orange-300 bg-orange-500/10 border-orange-500/20";
-    case "medium":
-      return "text-amber-300 bg-amber-500/10 border-amber-500/20";
-    default:
-      return "text-sky-300 bg-sky-500/10 border-sky-500/20";
+    case "critical": return "text-rose-300 bg-rose-500/10 border-rose-500/20";
+    case "high": return "text-orange-300 bg-orange-500/10 border-orange-500/20";
+    case "medium": return "text-amber-300 bg-amber-500/10 border-amber-500/20";
+    default: return "text-sky-300 bg-sky-500/10 border-sky-500/20";
   }
 }
 
 function isWithinDays(timestamp: string, days: number, referenceTime: number) {
   const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) {
-    return false;
-  }
-
+  if (Number.isNaN(date.getTime())) return false;
   return referenceTime - date.getTime() <= days * 24 * 60 * 60 * 1000;
 }
 
 function SkeletonBlock({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-xl bg-slate-800/70 ${className}`} />;
+  return <div className={`shimmer-loading rounded-xl ${className}`} />;
+}
+
+function GrrTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: { date: string; value: number; verdict: string } }>;
+}) {
+  if (!active || !payload?.length) return null;
+  const pt = payload[0].payload;
+  return (
+    <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] px-3 py-2 text-xs shadow-xl">
+      <div className="font-semibold text-[var(--text-primary)]">{pt.value.toFixed(2)}%</div>
+      <div className="mt-0.5 text-[var(--text-muted)]">{pt.date} · {pt.verdict}</div>
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -141,16 +165,12 @@ export default function DashboardPage() {
   const [now, setNow] = useState(() => Date.now());
 
   const loadDashboard = useCallback(async () => {
-    const hasExistingData = hasLoadedOnce;
-
-    if (hasExistingData) {
+    if (hasLoadedOnce) {
       setRefreshing(true);
     } else {
       setLoading(true);
     }
-
     setError(null);
-
     try {
       const [summary, grrHistory, alerts, auditLog] = await Promise.all([
         getDashboardSummary(),
@@ -158,54 +178,45 @@ export default function DashboardPage() {
         getAlerts({ status: "active", limit: 50 }),
         getAuditLog(),
       ]);
-
-      const payload = { summary, grrHistory, alerts, auditLog };
-        setData(payload);
-        setHasLoadedOnce(true);
+      setData({ summary, grrHistory, alerts, auditLog });
+      setHasLoadedOnce(true);
       setLastUpdated(new Date());
-        setNow(Date.now());
+      setNow(Date.now());
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load dashboard data";
-      setError(message);
+      setError(err instanceof Error ? err.message : "Failed to load dashboard data");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [hasLoadedOnce]);
 
-  useEffect(() => {
-    void loadDashboard();
-  }, [loadDashboard]);
+  useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
   useRealtimeStream({
     onEvent: (event) => {
-      const eventType = String(event.type || "");
-      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event"].includes(eventType)) {
+      const t = String(event.type || "");
+      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event"].includes(t)) {
         void loadDashboard();
       }
     },
   });
 
-  const handleResolveAlert = useCallback(
-    async (alertId: string) => {
-      setResolvingId(alertId);
-      try {
-        await resolveAlert(alertId);
-        await loadDashboard();
-      } finally {
-        setResolvingId(null);
-      }
-    },
-    [loadDashboard]
-  );
+  const handleResolveAlert = useCallback(async (alertId: string) => {
+    setResolvingId(alertId);
+    try {
+      await resolveAlert(alertId);
+      await loadDashboard();
+    } finally {
+      setResolvingId(null);
+    }
+  }, [loadDashboard]);
 
-  const dashboard = data;
-  const summary = dashboard?.summary;
-  const grrHistory = dashboard?.grrHistory ?? [];
-  const activeAlerts = [...(dashboard?.alerts.items ?? [])].sort(
-    (left, right) => SEVERITY_ORDER[right.severity] - SEVERITY_ORDER[left.severity]
+  const summary = data?.summary;
+  const grrHistory = data?.grrHistory ?? [];
+  const activeAlerts = [...(data?.alerts.items ?? [])].sort(
+    (a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]
   );
-  const auditPreview = (dashboard?.auditLog ?? []).slice(0, 5);
+  const auditPreview = (data?.auditLog ?? []).slice(0, 5);
 
   const totalThisWeek = grrHistory.filter((item) => isWithinDays(item.timestamp, 7, now)).length;
   const totalPrevWeek = grrHistory.filter((item) => {
@@ -216,148 +227,190 @@ export default function DashboardPage() {
 
   const processesMonitored = useMemo(() => {
     const names = new Set<string>();
-
-    for (const alert of activeAlerts) {
-      if (alert.process_name) {
-        names.add(alert.process_name);
-      }
-    }
-
-    for (const entry of auditPreview) {
-      if (entry.entity_type === "spc_process" && entry.entity_id) {
-        names.add(entry.entity_id);
-      }
-    }
-
+    for (const alert of activeAlerts) { if (alert.process_name) names.add(alert.process_name); }
+    for (const entry of auditPreview) { if (entry.entity_type === "spc_process" && entry.entity_id) names.add(entry.entity_id); }
     return names.size;
   }, [activeAlerts, auditPreview]);
 
   const highestSeverity = activeAlerts[0]?.severity;
   const passRate = summary?.passing_rate ?? 0;
   const passRateTone = getPassRateTone(passRate);
+  const showInitialLoading = loading && !data;
+  const hasInitialError = error && !data;
 
-  const showInitialLoading = loading && !dashboard;
-  const hasInitialError = error && !dashboard;
+  const grrChartData = grrHistory
+    .filter((item) => item.grr_percent != null)
+    .slice(-20)
+    .map((item) => ({
+      date: formatShortDate(item.timestamp),
+      value: item.grr_percent!,
+      verdict: VERDICT_LABELS[item.verdict],
+      fill: VERDICT_DOT[item.verdict],
+    }));
 
   if (hasInitialError) {
     return (
-      <div className="min-h-full bg-slate-900 px-6 py-8 text-slate-100">
-        <div className="mx-auto flex max-w-5xl items-center justify-center rounded-3xl border border-rose-500/20 bg-slate-800/90 p-8 shadow-2xl shadow-black/30">
-          <div className="max-w-md text-center">
+      <div className="min-h-full bg-[var(--bg-root)] px-6 py-8 text-[var(--text-primary)]">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mx-auto flex max-w-md items-center justify-center rounded-2xl border border-[var(--critical-bg)] bg-[var(--bg-surface)] p-8 shadow-2xl"
+        >
+          <div className="text-center">
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-rose-500/20 bg-rose-500/10 text-rose-300">
               <AlertTriangle size={22} />
             </div>
-            <h1 className="text-2xl font-semibold text-slate-100">Dashboard unavailable</h1>
-            <p className="mt-3 text-sm leading-6 text-slate-400">{error}</p>
+            <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Dashboard unavailable</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{error}</p>
             <button
               onClick={() => void loadDashboard()}
-              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:bg-emerald-400"
+              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[var(--success)] px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:opacity-90"
             >
               <RefreshCw size={16} /> Retry
             </button>
           </div>
-        </div>
+        </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-full bg-slate-900 text-slate-100">
-      <div className="mx-auto flex min-h-full max-w-[1600px] flex-col gap-6 px-5 py-5 lg:px-8">
-        <header className="rounded-3xl border border-slate-800 bg-slate-800/95 px-6 py-5 shadow-lg">
+    <div className="min-h-full bg-[var(--bg-root)] text-[var(--text-primary)]">
+      <div className="mx-auto flex min-h-full max-w-[1600px] flex-col gap-5 px-5 py-5 lg:px-8">
+
+        {/* Header */}
+        <motion.header
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-6 py-5 shadow-lg"
+        >
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-start gap-4">
-              <div className="mt-1 flex h-12 w-12 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
-                <Radar size={22} />
+              <div className="mt-0.5 flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--accent-bg-strong)] bg-[var(--accent-bg)] text-[var(--accent)]">
+                <Radar size={20} />
               </div>
               <div>
                 <div className="flex items-center gap-3">
-                  <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
+                  <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">
                     Quality Control AI Agent
                   </h1>
-                  <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-400">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(34,197,94,0.12)]" />
-                    Backend connected
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--success-bg)] bg-[var(--success-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--success)]">
+                    <span className="live-dot h-1.5 w-1.5" />
+                    Live
                   </span>
                 </div>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
-                  Industrial quality operations dashboard with live GR&R, SPC, alerting, and audit visibility.
+                <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                  Industrial quality operations — GR&R, SPC, alerting, and audit visibility.
                 </p>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3">
-              <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">
-                <Clock3 size={13} /> Last updated
+            <div className="flex items-center gap-3">
+              {refreshing && (
+                <Loader2 size={14} className="animate-spin text-[var(--text-muted)]" />
+              )}
+              <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] px-4 py-3">
+                <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
+                  <Clock3 size={12} /> Last updated
+                </div>
+                <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                  {lastUpdated ? formatTimestamp(lastUpdated.toISOString()) : "Waiting…"}
+                </div>
               </div>
-              <div className="mt-1 text-sm font-semibold text-slate-200">
-                {lastUpdated ? formatTimestamp(lastUpdated.toISOString()) : "Waiting for data"}
-              </div>
-              {refreshing ? <div className="mt-1 text-[11px] text-slate-500">Refreshing live data...</div> : null}
+              <button
+                onClick={() => void loadDashboard()}
+                className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                title="Refresh"
+              >
+                <RefreshCw size={14} />
+              </button>
             </div>
           </div>
 
-          {error ? (
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-              <span>{error}</span>
-              <button
-                onClick={() => void loadDashboard()}
-                className="inline-flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/20"
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mt-4 flex items-center justify-between gap-3 overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200"
               >
-                <RefreshCw size={14} /> Retry
-              </button>
-            </div>
-          ) : null}
-        </header>
+                <span>{error}</span>
+                <button
+                  onClick={() => void loadDashboard()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/20"
+                >
+                  <RefreshCw size={12} /> Retry
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.header>
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <StatCard
-            title="Total GR&R Analyses"
-            value={summary?.total_grr_analyses ?? 0}
-            icon={<Database size={18} />}
-            tone="text-slate-100"
-            accent="border-cyan-500/20 bg-cyan-500/10 text-cyan-300"
-            detail={totalTrend.label}
-            trend={totalTrend.direction}
-            loading={showInitialLoading}
-          />
-          <StatCard
-            title="Current Pass Rate %"
-            value={`${passRate.toFixed(1)}%`}
-            icon={<CheckCircle2 size={18} />}
-            tone={passRateTone.split(" ")[0]}
-            accent={passRateTone}
-            detail={passRate > 70 ? "Healthy process capability" : passRate >= 40 ? "Review recommended" : "Immediate attention"}
-            loading={showInitialLoading}
-          />
-          <StatCard
-            title="Active Alerts"
-            value={summary?.active_alerts_count ?? 0}
-            icon={<AlertTriangle size={18} />}
-            tone="text-slate-100"
-            accent={getSeverityTone(highestSeverity)}
-            detail={highestSeverity ? `Highest severity: ${highestSeverity}` : "No active incidents"}
-            loading={showInitialLoading}
-          />
-          <StatCard
-            title="Processes Monitored"
-            value={processesMonitored}
-            icon={<Activity size={18} />}
-            tone="text-slate-100"
-            accent="border-slate-600 bg-slate-700/80 text-slate-300"
-            detail="Monitored via alerts and audit trail"
-            loading={showInitialLoading}
-          />
-        </section>
+        {/* Stat cards */}
+        <motion.section
+          className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"
+          variants={containerVariants}
+          initial="hidden"
+          animate="show"
+        >
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Total GR&R Analyses"
+              value={summary?.total_grr_analyses ?? 0}
+              icon={<Database size={17} />}
+              tone="text-[var(--text-primary)]"
+              accent="border-[var(--accent-bg-strong)] bg-[var(--accent-bg)] text-[var(--accent)]"
+              detail={totalTrend.label}
+              trend={totalTrend.direction}
+              loading={showInitialLoading}
+            />
+          </motion.div>
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Current Pass Rate"
+              value={`${passRate.toFixed(1)}%`}
+              icon={<CheckCircle2 size={17} />}
+              tone={passRateTone.split(" ")[0]}
+              accent={passRateTone}
+              detail={passRate > 70 ? "Healthy process capability" : passRate >= 40 ? "Review recommended" : "Immediate attention required"}
+              loading={showInitialLoading}
+            />
+          </motion.div>
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Active Alerts"
+              value={summary?.active_alerts_count ?? 0}
+              icon={<AlertTriangle size={17} />}
+              tone="text-[var(--text-primary)]"
+              accent={getSeverityTone(highestSeverity)}
+              detail={highestSeverity ? `Highest severity: ${highestSeverity}` : "No active incidents"}
+              loading={showInitialLoading}
+            />
+          </motion.div>
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Processes Monitored"
+              value={processesMonitored}
+              icon={<Activity size={17} />}
+              tone="text-[var(--text-primary)]"
+              accent="border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"
+              detail="Tracked via alerts and audit trail"
+              loading={showInitialLoading}
+            />
+          </motion.div>
+        </motion.section>
 
-        <section className="grid gap-4 xl:grid-cols-2">
-          <Panel title="Recent GR&R Results" icon={<Database size={16} />}>
+        {/* Main panels */}
+        <section className="grid gap-5 xl:grid-cols-2">
+          <Panel title="Recent GR&R Results" icon={<Database size={15} />}>
             {showInitialLoading ? (
-              <TableSkeleton rows={10} />
+              <TableSkeleton rows={8} />
             ) : (
-              <div className="overflow-hidden rounded-2xl border border-slate-700">
-                <table className="min-w-full divide-y divide-slate-700 text-left text-sm">
-                  <thead className="bg-slate-800/80 text-xs uppercase tracking-[0.16em] text-slate-400">
+              <div className="overflow-hidden rounded-xl border border-[var(--border-default)]">
+                <table className="min-w-full divide-y divide-[var(--border-subtle)] text-left text-sm">
+                  <thead className="bg-[var(--bg-elevated)] text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
                     <tr>
                       <th className="px-4 py-3 font-medium">Timestamp</th>
                       <th className="px-4 py-3 font-medium">GR&R %</th>
@@ -366,125 +419,180 @@ export default function DashboardPage() {
                       <th className="px-4 py-3 font-medium">Parts</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-700 bg-slate-900/40">
+                  <tbody className="divide-y divide-[var(--border-subtle)] bg-[var(--bg-root)]/40">
                     {grrHistory.slice(0, 10).map((item) => (
-                      <tr key={item.id} className="transition hover:bg-slate-800/50">
-                        <td className="px-4 py-3 text-slate-400">{formatTimestamp(item.timestamp)}</td>
-                        <td className="px-4 py-3 font-semibold text-slate-100">{item.grr_percent?.toFixed(1) ?? "—"}</td>
+                      <tr key={item.id} className="transition hover:bg-[var(--bg-hover)]">
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{formatTimestamp(item.timestamp)}</td>
+                        <td className="px-4 py-3 font-semibold tabular-nums text-[var(--text-primary)]">
+                          {item.grr_percent?.toFixed(1) ?? "—"}%
+                        </td>
                         <td className="px-4 py-3">
-                          <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${VERDICT_STYLES[item.verdict]}`}>
+                          <span className={`badge ${
+                            item.verdict === "pass" ? "badge-success" : item.verdict === "acceptable" ? "badge-warning" : "badge-critical"
+                          }`}>
                             {VERDICT_LABELS[item.verdict]}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-slate-300">{item.operator_count}</td>
-                        <td className="px-4 py-3 text-slate-300">{item.part_count}</td>
+                        <td className="px-4 py-3 text-[var(--text-secondary)]">{item.operator_count}</td>
+                        <td className="px-4 py-3 text-[var(--text-secondary)]">{item.part_count}</td>
                       </tr>
                     ))}
-                    {!grrHistory.length ? (
+                    {!grrHistory.length && (
                       <tr>
-                        <td className="px-4 py-8 text-center text-slate-500" colSpan={5}>
+                        <td className="px-4 py-8 text-center text-[var(--text-muted)]" colSpan={5}>
                           No GR&R analyses available.
                         </td>
                       </tr>
-                    ) : null}
+                    )}
                   </tbody>
                 </table>
               </div>
             )}
           </Panel>
 
-          <Panel title="Active Alerts" icon={<ShieldAlert size={16} />}>
+          <Panel title="Active Alerts" icon={<ShieldAlert size={15} />}>
             {showInitialLoading ? (
-              <ListSkeleton rows={6} />
+              <ListSkeleton rows={5} />
             ) : activeAlerts.length ? (
-              <div className="space-y-3">
-                {activeAlerts.map((alert) => (
-                  <div
-                    key={alert.id}
-                    className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4 transition hover:border-slate-600 hover:bg-slate-800/60"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getSeverityTone(alert.severity)}`}>
-                            {alert.severity}
-                          </span>
-                          <span className="text-[11px] uppercase tracking-[0.18em] text-slate-400">
-                            {alert.process_name}
-                          </span>
+              <div className="space-y-2.5">
+                <AnimatePresence initial={false}>
+                  {activeAlerts.map((alert) => (
+                    <motion.div
+                      key={alert.id}
+                      initial={{ opacity: 0, x: 8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -8 }}
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                      className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)]"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`badge ${getSeverityTone(alert.severity).includes("rose") ? "badge-critical" : getSeverityTone(alert.severity).includes("amber") ? "badge-warning" : "badge-info"}`}>
+                              {alert.severity}
+                            </span>
+                            {alert.process_name && (
+                              <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
+                                {alert.process_name}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-2 text-sm leading-relaxed text-[var(--text-primary)]">{alert.message}</p>
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">{formatTimestamp(alert.created_at)}</p>
                         </div>
-                        <p className="mt-2 text-sm leading-6 text-slate-200">{alert.message}</p>
-                        <p className="mt-1 text-xs text-slate-500">{formatTimestamp(alert.created_at)}</p>
+                        <button
+                          onClick={() => void handleResolveAlert(alert.id)}
+                          disabled={resolvingId === alert.id}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--success-bg)] bg-[var(--success-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--success)] transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {resolvingId === alert.id
+                            ? <Loader2 size={12} className="animate-spin" />
+                            : <CheckCircle2 size={12} />}
+                          Resolve
+                        </button>
                       </div>
-                      <button
-                        onClick={() => void handleResolveAlert(alert.id)}
-                        disabled={resolvingId === alert.id}
-                        className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {resolvingId === alert.id ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                        Resolve
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
               </div>
             ) : (
               <EmptyState
                 icon={<CheckCircle2 size={18} />}
                 title="No active alerts"
-                description="All monitored processes are currently within control limits."
+                description="All monitored processes are within control limits."
               />
             )}
           </Panel>
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-2">
-          <Panel title="SPC Chart" icon={<Radar size={16} />}>
-            <div className="flex h-full min-h-[280px] flex-col rounded-2xl border border-dashed border-slate-700 bg-slate-900/60 p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-slate-100">No process selected</p>
-                  <p className="mt-1 text-sm text-slate-400">
-                    Add a monitored process to render live SPC charts and control-limit context.
-                  </p>
-                </div>
-                <button
-                  onClick={() => showToast("Process registration is not wired yet.")}
-                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-900 transition hover:bg-white"
-                >
-                  <Plus size={14} /> Add Process
-                </button>
+        {/* Charts row */}
+        <section className="grid gap-5 xl:grid-cols-2">
+          <Panel title="GR&R Trend (Last 20 Runs)" icon={<TrendingUp size={15} />}>
+            {showInitialLoading ? (
+              <SkeletonBlock className="h-[280px]" />
+            ) : grrChartData.length > 1 ? (
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={grrChartData} margin={{ top: 8, right: 16, left: -8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: "var(--text-muted)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fill: "var(--text-muted)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      unit="%"
+                      domain={[0, "auto"]}
+                    />
+                    <Tooltip content={<GrrTooltip />} />
+                    <ReferenceLine
+                      y={30}
+                      stroke="var(--critical)"
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.5}
+                      label={{ value: "30% limit", fill: "var(--critical)", fontSize: 9, position: "right" }}
+                    />
+                    <ReferenceLine
+                      y={10}
+                      stroke="var(--success)"
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.5}
+                      label={{ value: "10% target", fill: "var(--success)", fontSize: 9, position: "right" }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--accent)"
+                      strokeWidth={2}
+                      dot={({ cx, cy, payload }) => (
+                        <circle
+                          key={`dot-${cx}-${cy}`}
+                          cx={cx}
+                          cy={cy}
+                          r={4}
+                          fill={(payload as { fill: string }).fill}
+                          stroke="var(--bg-root)"
+                          strokeWidth={1.5}
+                        />
+                      )}
+                      activeDot={{ r: 5, fill: "var(--accent-bright)", stroke: "var(--bg-root)", strokeWidth: 2 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
-
-              <div className="mt-6 flex flex-1 items-center justify-center rounded-2xl border border-slate-700 bg-slate-800/60">
-                <div className="text-center">
-                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-600 bg-slate-700/70 text-slate-400">
-                    <Server size={24} />
-                  </div>
-                  <p className="mt-4 text-sm text-slate-300">SPC chart placeholder</p>
-                  <p className="mt-1 text-xs text-slate-500">Awaiting process telemetry.</p>
-                </div>
-              </div>
-            </div>
+            ) : (
+              <EmptyState
+                icon={<TrendingUp size={18} />}
+                title="No trend data yet"
+                description="GR&R history will appear here after analyses are recorded."
+              />
+            )}
           </Panel>
 
-          <Panel title="Audit Log" icon={<FileText size={16} />}>
+          <Panel title="Audit Log" icon={<FileText size={15} />}>
             {showInitialLoading ? (
               <ListSkeleton rows={5} />
             ) : auditPreview.length ? (
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 {auditPreview.map((entry) => (
-                  <div key={entry.id} className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
+                  <div
+                    key={entry.id}
+                    className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-3.5"
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-medium text-slate-100">{entry.action}</p>
-                        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-400">
+                        <p className="text-sm font-medium text-[var(--text-primary)]">{entry.action}</p>
+                        <p className="mt-0.5 text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
                           {entry.entity_type} · {entry.entity_id}
                         </p>
                       </div>
-                      <span className="text-xs text-slate-500">{formatTimestamp(entry.timestamp)}</span>
+                      <span className="shrink-0 text-xs text-[var(--text-muted)]">{formatTimestamp(entry.timestamp)}</span>
                     </div>
-                    <p className="mt-2 text-sm text-slate-400">Actor: {entry.actor}</p>
+                    <p className="mt-1.5 text-xs text-[var(--text-secondary)]">Actor: {entry.actor}</p>
                   </div>
                 ))}
               </div>
@@ -492,7 +600,7 @@ export default function DashboardPage() {
               <EmptyState
                 icon={<FileText size={18} />}
                 title="No audit entries"
-                description="Audit logs will appear here after quality workflows run."
+                description="Audit logs appear here after quality workflows run."
               />
             )}
           </Panel>
@@ -512,15 +620,20 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-3xl border border-slate-700 bg-slate-800/90 p-5 shadow-lg">
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 300, damping: 28, delay: 0.15 }}
+      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5"
+    >
       <div className="mb-4 flex items-center gap-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-600 bg-slate-900/70 text-slate-300">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
           {icon}
         </div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">{title}</h2>
+        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text-secondary)]">{title}</h2>
       </div>
       {children}
-    </div>
+    </motion.div>
   );
 }
 
@@ -544,71 +657,64 @@ function StatCard({
   loading: boolean;
 }) {
   return (
-    <div className="rounded-3xl border border-slate-700 bg-slate-800/90 p-5 shadow-lg">
+    <motion.div
+      whileHover={{ y: -2, transition: { type: "spring", stiffness: 400, damping: 20 } }}
+      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5 transition-shadow hover:shadow-lg"
+    >
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-400">{title}</p>
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">{title}</p>
           {loading ? (
-            <SkeletonBlock className="mt-3 h-9 w-32" />
+            <SkeletonBlock className="mt-3 h-9 w-28" />
           ) : (
-            <div className={`mt-3 text-3xl font-semibold tracking-tight ${tone}`}>{value}</div>
+            <div className={`mt-3 text-3xl font-semibold tracking-tight tabular-nums ${tone}`}>{value}</div>
           )}
         </div>
-        <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${accent}`}>{icon}</div>
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${accent}`}>{icon}</div>
       </div>
-
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <span className="text-sm text-slate-400">{detail}</span>
-        {trend === "up" ? (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-400">
-            <ArrowUpRight size={14} /> {detail === "New baseline" ? "" : "Up"}
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <span className="text-xs text-[var(--text-muted)]">{detail}</span>
+        {trend === "up" && (
+          <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--success)]">
+            <ArrowUpRight size={12} /> Up
           </span>
-        ) : trend === "down" ? (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400">
-            <ArrowDownRight size={14} /> Down
+        )}
+        {trend === "down" && (
+          <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--critical)]">
+            <ArrowDownRight size={12} /> Down
           </span>
-        ) : null}
+        )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
-function EmptyState({
-  icon,
-  title,
-  description,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-}) {
+function EmptyState({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
   return (
-    <div className="flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-700 bg-slate-900/50 px-6 py-8 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-600 bg-slate-800 text-slate-400">
+    <div className="flex min-h-[200px] flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border-default)] bg-[var(--bg-root)]/40 px-6 py-8 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-muted)]">
         {icon}
       </div>
-      <h3 className="mt-4 text-sm font-semibold text-slate-200">{title}</h3>
-      <p className="mt-1 max-w-sm text-sm leading-6 text-slate-400">{description}</p>
+      <h3 className="mt-3 text-sm font-semibold text-[var(--text-primary)]">{title}</h3>
+      <p className="mt-1 max-w-xs text-xs leading-relaxed text-[var(--text-muted)]">{description}</p>
     </div>
   );
 }
 
 function TableSkeleton({ rows }: { rows: number }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-700">
-      <div className="grid grid-cols-5 gap-0 border-b border-slate-700 bg-slate-800/80 px-4 py-3">
-        {Array.from({ length: 5 }).map((_, index) => (
-          <SkeletonBlock key={index} className="h-3 w-full" />
-        ))}
+    <div className="overflow-hidden rounded-xl border border-[var(--border-default)]">
+      <div className="grid grid-cols-5 gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
+        {Array.from({ length: 5 }).map((_, i) => <SkeletonBlock key={i} className="h-3" />)}
       </div>
-      <div className="divide-y divide-slate-700 bg-slate-900/40">
-        {Array.from({ length: rows }).map((_, index) => (
-          <div key={index} className="grid grid-cols-5 gap-4 px-4 py-4">
-            <SkeletonBlock className="h-4 w-28" />
-            <SkeletonBlock className="h-4 w-16" />
-            <SkeletonBlock className="h-6 w-24 rounded-full" />
-            <SkeletonBlock className="h-4 w-12" />
-            <SkeletonBlock className="h-4 w-12" />
+      <div className="divide-y divide-[var(--border-subtle)] bg-[var(--bg-root)]/40">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="grid grid-cols-5 gap-4 px-4 py-3.5">
+            <SkeletonBlock className="h-4 w-24" />
+            <SkeletonBlock className="h-4 w-14" />
+            <SkeletonBlock className="h-5 w-20 rounded-full" />
+            <SkeletonBlock className="h-4 w-10" />
+            <SkeletonBlock className="h-4 w-10" />
           </div>
         ))}
       </div>
@@ -618,16 +724,16 @@ function TableSkeleton({ rows }: { rows: number }) {
 
 function ListSkeleton({ rows }: { rows: number }) {
   return (
-    <div className="space-y-3">
-      {Array.from({ length: rows }).map((_, index) => (
-        <div key={index} className="rounded-2xl border border-slate-700 bg-slate-900/60 p-4">
+    <div className="space-y-2.5">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4">
           <div className="flex items-start justify-between gap-3">
-            <div className="flex-1 space-y-3">
-              <SkeletonBlock className="h-5 w-36" />
-              <SkeletonBlock className="h-4 w-full" />
-              <SkeletonBlock className="h-3 w-24" />
+            <div className="flex-1 space-y-2.5">
+              <SkeletonBlock className="h-4 w-32" />
+              <SkeletonBlock className="h-3.5 w-full" />
+              <SkeletonBlock className="h-3 w-20" />
             </div>
-            <SkeletonBlock className="h-9 w-24 rounded-xl" />
+            <SkeletonBlock className="h-8 w-20 rounded-lg" />
           </div>
         </div>
       ))}

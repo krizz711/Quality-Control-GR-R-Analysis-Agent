@@ -7,7 +7,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect, status
 from redis.asyncio import Redis
 
 from core.config import settings
@@ -16,6 +16,35 @@ logger = logging.getLogger(__name__)
 
 REALTIME_CHANNEL = "quality.realtime"
 REALTIME_DLQ_CHANNEL = "quality.realtime.dlq"
+
+
+async def authenticate_websocket(websocket: WebSocket) -> bool:
+    """
+    Validate a JWT or API key passed as ?token=<value> in the WS URL.
+    Closes the connection with 4401 if missing or invalid.
+    Returns True if authenticated, False otherwise (connection already closed).
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401, reason="Missing authentication token")
+        return False
+
+    # Accept plain API key for service-to-service clients
+    if token == settings.api_auth_key:
+        return True
+
+    # Accept JWT bearer tokens
+    try:
+        from jose import JWTError, jwt
+        from api.auth import ALGORITHM
+
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
+        if payload.get("sub"):
+            return True
+        raise ValueError("empty sub claim")
+    except Exception:
+        await websocket.close(code=4401, reason="Invalid authentication token")
+        return False
 
 
 class WebSocketManager:

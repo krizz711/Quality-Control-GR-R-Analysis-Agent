@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -127,6 +127,8 @@ app.include_router(quality_router)
 
 AUTH_EXEMPT_PATHS = {
     "/health",
+    "/health/live",
+    "/health/ready",
     "/api/v1/health",
     "/api/v1/auth/token",
     "/api/v1/auth/register",
@@ -363,6 +365,29 @@ class GRRStudyRequest(BaseModel):
     equipment_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("operator_ids")
+    @classmethod
+    def require_min_operators(cls, v: list[str]) -> list[str]:
+        if len(v) < 2:
+            raise ValueError("AIAG MSA requires at least 2 operators for a valid GR&R study")
+        return v
+
+    @field_validator("part_ids")
+    @classmethod
+    def require_min_parts(cls, v: list[str]) -> list[str]:
+        if len(v) < 5:
+            raise ValueError("AIAG MSA requires at least 5 parts for a valid GR&R study")
+        return v
+
+    @field_validator("measurements")
+    @classmethod
+    def validate_measurement_values(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for m in v:
+            val = m.get("value") or m.get("measurement")
+            if val is not None and abs(float(val)) >= 1e9:
+                raise ValueError(f"Measurement value {val} is outside physical range (±1e9)")
+        return v
+
 
 class GRRStudyResponse(BaseModel):
     """Response body for a completed GR&R study."""
@@ -382,6 +407,13 @@ class SPCRequest(BaseModel):
     subgroup_size: int = Field(5, ge=2)
     part_number: str = "UNKNOWN"
     characteristic_name: str = "UNKNOWN"
+
+    @field_validator("values")
+    @classmethod
+    def validate_value_range(cls, v: list[float]) -> list[float]:
+        if any(abs(x) >= 1e9 for x in v):
+            raise ValueError("Measurement values are outside physical range (±1e9)")
+        return v
 
 
 class SPCResponse(BaseModel):
@@ -558,24 +590,27 @@ async def create_grr_study(body: GRRStudyRequest) -> GRRStudyResponse:
 
             await session.commit()
 
-        # 7. Log to ML registry via adapter
-        adapter = get_adapter()
-        await adapter.log_experiment(
-            experiment_name="grr_studies",
-            run_name=study_id_str,
-            params={
-                "method": body.method,
-                "n_parts": len(body.part_ids),
-                "n_operators": len(body.operator_ids),
-            },
-            metrics={
-                "grr_pct": result.total_grr,
-                "ev": result.repeatability,
-                "av": result.reproducibility,
-                "ndc": result.ndc,
-            },
-            tags={"acceptance": verdict.level.value},
-        )
+        # 7. Log to ML registry via adapter (best-effort — never blocks a GR&R result)
+        try:
+            adapter = get_adapter()
+            await adapter.log_experiment(
+                experiment_name="grr_studies",
+                run_name=study_id_str,
+                params={
+                    "method": body.method,
+                    "n_parts": len(body.part_ids),
+                    "n_operators": len(body.operator_ids),
+                },
+                metrics={
+                    "grr_pct": result.total_grr,
+                    "ev": result.repeatability,
+                    "av": result.reproducibility,
+                    "ndc": result.ndc,
+                },
+                tags={"acceptance": verdict.level.value},
+            )
+        except Exception as mlflow_exc:
+            logger.warning("MLflow logging failed (non-fatal): %s", mlflow_exc)
 
         duration = time.time() - start_time
         grr_study_duration.observe(duration)

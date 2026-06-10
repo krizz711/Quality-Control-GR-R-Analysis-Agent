@@ -88,11 +88,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
+      DATABASE_URL: ${DATABASE_URL}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-arad-quality-agent-test-consumer}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       JIRA_URL: ${JIRA_URL:-}
       JIRA_EMAIL: ${JIRA_EMAIL:-}
@@ -105,7 +106,7 @@ services:
       ALLOW_MOCK_DATA: "false"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -126,7 +127,7 @@ services:
         condition: service_healthy
     command: ["python", "-m", "agent.consumer"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
+      DATABASE_URL: ${DATABASE_URL}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -164,7 +165,7 @@ services:
       mlflow server
       --host 0.0.0.0
       --port 5000
-      --backend-store-uri postgresql://arad:arad_pass@timescaledb:5432/arad_quality
+      --backend-store-uri postgresql://arad:MyStr0ngP%40ss!@timescaledb:5432/arad_quality
       --default-artifact-root /mlflow/artifacts
     volumes:
       - ./mlflow-artifacts:/mlflow/artifacts

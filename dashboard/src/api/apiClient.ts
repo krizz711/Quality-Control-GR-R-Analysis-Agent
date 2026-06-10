@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import axios, { type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
+import { toast as sonnerToast } from "sonner";
 
 export interface BackendErrorResponse {
   error?: boolean;
@@ -194,58 +195,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function showToast(message: string) {
-  if (typeof window === "undefined") {
-    console.error(message);
-    return;
-  }
-
-  const containerId = "api-client-toast-container";
-  let container = document.getElementById(containerId);
-
-  if (!container) {
-    container = document.createElement("div");
-    container.id = containerId;
-    container.style.position = "fixed";
-    container.style.top = "16px";
-    container.style.right = "16px";
-    container.style.zIndex = "9999";
-    container.style.display = "flex";
-    container.style.flexDirection = "column";
-    container.style.gap = "10px";
-    container.style.pointerEvents = "none";
-    document.body.appendChild(container);
-  }
-
-  const toast = document.createElement("div");
-  toast.setAttribute("role", "status");
-  toast.setAttribute("aria-live", "polite");
-  toast.textContent = message;
-  toast.style.minWidth = "280px";
-  toast.style.maxWidth = "420px";
-  toast.style.padding = "12px 14px";
-  toast.style.borderRadius = "12px";
-  toast.style.background = "rgba(15, 23, 42, 0.96)";
-  toast.style.color = "#ffffff";
-  toast.style.boxShadow = "0 12px 32px rgba(0, 0, 0, 0.25)";
-  toast.style.border = "1px solid rgba(255, 255, 255, 0.08)";
-  toast.style.fontSize = "13px";
-  toast.style.lineHeight = "1.4";
-  toast.style.pointerEvents = "auto";
-  toast.style.opacity = "0";
-  toast.style.transform = "translateY(-8px)";
-  toast.style.transition = "opacity 160ms ease, transform 160ms ease";
-
-  container.appendChild(toast);
-  requestAnimationFrame(() => {
-    toast.style.opacity = "1";
-    toast.style.transform = "translateY(0)";
-  });
-
-  window.setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transform = "translateY(-8px)";
-    window.setTimeout(() => toast.remove(), 180);
-  }, 3000);
+  sonnerToast(message);
 }
 
 export { showToast };

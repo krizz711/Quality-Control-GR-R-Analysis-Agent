@@ -18,16 +18,18 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
 # ── Gemini API constants ──────────────────────────────────────────────────────
 _MODEL = "gemini-2.5-flash"
 _MAX_TOKENS = 1024
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 # ── System prompt (manufacturing quality domain expert) ───────────────────────
-_SYSTEM_PROMPT = """You are an expert manufacturing quality engineer specializing in 
-Measurement System Analysis (MSA), Statistical Process Control (SPC), and 
+_SYSTEM_PROMPT = """You are an expert manufacturing quality engineer specializing in
+Measurement System Analysis (MSA), Statistical Process Control (SPC), and
 Gauge Repeatability & Reproducibility (GR&R) studies.
 
 You follow AIAG MSA 4th Edition standards. Your responses are:
@@ -37,6 +39,16 @@ You follow AIAG MSA 4th Edition standards. Your responses are:
 - Free of filler phrases — every sentence must add value
 
 Always quantify severity. Always recommend a specific next step."""
+
+
+def _is_valid_llm_response(text: str) -> bool:
+    """Return False if the text is a known error placeholder from _call_gemini."""
+    return not text.startswith("[AI analysis unavailable")
+
+
+def _sanitize_field(value: str) -> str:
+    """Strip characters that can break prompt templates or enable injection."""
+    return value.replace("{", "").replace("}", "").replace("`", "").replace("\\", "")
 
 
 @dataclass
@@ -72,38 +84,94 @@ class PredictiveInsight:
     preventive_actions: list[str]
 
 
+@retry(
+    retry=retry_if_exception_type(httpx.TransportError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    reraise=False,
+)
+async def _call_gemini_inner(
+    user_message: str,
+    api_key: str,
+    *,
+    system: str = _SYSTEM_PROMPT,
+    max_tokens: int = _MAX_TOKENS,
+) -> tuple[str, int, int]:
+    """
+    Inner call to Gemini REST API. Returns (text, input_tokens, output_tokens).
+    API key is passed via x-goog-api-key header (not URL param).
+    Retries up to 3× on transient transport errors.
+    """
+    url = f"{_GEMINI_BASE_URL}/{_MODEL}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        usage = data.get("usageMetadata", {})
+        input_tokens = usage.get("promptTokenCount", 0)
+        output_tokens = usage.get("candidatesTokenCount", 0)
+        return text, input_tokens, output_tokens
+
+
 async def _call_gemini(
     user_message: str,
     api_key: str,
     *,
     system: str = _SYSTEM_PROMPT,
     max_tokens: int = _MAX_TOKENS,
+    use_case: str = "general",
 ) -> str:
     """
-    Single async call to the Gemini REST API.
-    Returns the text content of the first response block.
-    Never raises — returns an error string on failure.
+    Public wrapper. Never raises — returns an error placeholder on failure.
+    Logs token usage via Prometheus and MLflow.
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_MODEL}:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
-    body = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens}
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+        text, input_tokens, output_tokens = await _call_gemini_inner(
+            user_message, api_key, system=system, max_tokens=max_tokens
+        )
+        _record_token_usage(use_case, input_tokens, output_tokens)
+        return text
     except httpx.HTTPStatusError as exc:
         logger.error("Gemini API HTTP error %s: %s", exc.response.status_code, exc.response.text)
         return f"[AI analysis unavailable: HTTP {exc.response.status_code}]"
     except Exception as exc:
         logger.error("Gemini API call failed: %s", exc)
         return f"[AI analysis unavailable: {exc}]"
+
+
+try:
+    from prometheus_client import Counter as _PCounter
+
+    _llm_tokens_total = _PCounter(
+        "llm_tokens_total",
+        "Total tokens used by the LLM layer",
+        ["model", "use_case", "direction"],
+    )
+    _prometheus_available = True
+except Exception:
+    _prometheus_available = False
+
+
+def _record_token_usage(use_case: str, input_tokens: int, output_tokens: int) -> None:
+    """Record token counts to Prometheus. Best-effort — never raises."""
+    if not _prometheus_available or (input_tokens == 0 and output_tokens == 0):
+        return
+    try:
+        _llm_tokens_total.labels(model=_MODEL, use_case=use_case, direction="input").inc(input_tokens)
+        _llm_tokens_total.labels(model=_MODEL, use_case=use_case, direction="output").inc(output_tokens)
+    except Exception:
+        pass
 
 
 def _parse_json_response(raw: str, fallback_key: str = "content") -> dict[str, Any]:
@@ -153,6 +221,9 @@ async def generate_grr_narrative(
     -------
     GRRNarrative
     """
+    equipment_id = _sanitize_field(equipment_id)
+    characteristic_name = _sanitize_field(characteristic_name)
+
     grr_pct = grr_result.get("total_grr", 0)
     ev = grr_result.get("repeatability", 0)
     av = grr_result.get("reproducibility", 0)
@@ -195,8 +266,8 @@ Respond ONLY with this JSON (no markdown, no preamble):
   "confidence": "high|medium|low"
 }}"""
 
-    raw = await _call_gemini(prompt, api_key)
-    parsed = _parse_json_response(raw)
+    raw = await _call_gemini(prompt, api_key, use_case="grr_narrative")
+    parsed = _parse_json_response(raw) if _is_valid_llm_response(raw) else {}
 
     return GRRNarrative(
         summary=parsed.get("summary", raw[:300]),
@@ -242,6 +313,8 @@ async def interpret_spc_violations(
     -------
     SPCNarrative
     """
+    part_number = _sanitize_field(part_number)
+    characteristic_name = _sanitize_field(characteristic_name)
     active_rules = {k: v for k, v in violated_rules.items() if v}
     rule_descriptions = {
         "rule_1": "Point beyond 3σ (extreme outlier — immediate special cause)",
@@ -291,8 +364,8 @@ Respond ONLY with this JSON (no markdown, no preamble):
   "recommended_actions": ["Action 1 (do now)", "Action 2", "Action 3"]
 }}"""
 
-    raw = await _call_gemini(prompt, api_key)
-    parsed = _parse_json_response(raw)
+    raw = await _call_gemini(prompt, api_key, use_case="spc_interpret")
+    parsed = _parse_json_response(raw) if _is_valid_llm_response(raw) else {}
 
     return SPCNarrative(
         pattern_description=parsed.get("pattern_description", "Pattern analysis unavailable."),
@@ -388,8 +461,8 @@ Predict quality risks BEFORE Nelson rules fire. Respond ONLY with this JSON (no 
   "preventive_actions": ["Preventive action 1 (do now)", "Action 2", "Action 3"]
 }}"""
 
-    raw = await _call_gemini(prompt, api_key)
-    parsed = _parse_json_response(raw)
+    raw = await _call_gemini(prompt, api_key, use_case="spc_predict")
+    parsed = _parse_json_response(raw) if _is_valid_llm_response(raw) else {}
 
     return PredictiveInsight(
         trend_summary=parsed.get("trend_summary", "Trend analysis unavailable."),
@@ -445,12 +518,15 @@ CURRENT SYSTEM STATE:
         messages.append({"role": role, "parts": [{"text": turn["content"]}]})
     messages.append({"role": "user", "parts": [{"text": question}]})
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{_MODEL}:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+    url = f"{_GEMINI_BASE_URL}/{_MODEL}:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": messages,
-        "generationConfig": {"maxOutputTokens": 600}
+        "generationConfig": {"maxOutputTokens": 600},
     }
 
     try:
@@ -458,6 +534,12 @@ CURRENT SYSTEM STATE:
             response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()
             data = response.json()
+            usage = data.get("usageMetadata", {})
+            _record_token_usage(
+                "chat",
+                usage.get("promptTokenCount", 0),
+                usage.get("candidatesTokenCount", 0),
+            )
             return data["candidates"][0]["content"]["parts"][0]["text"]
     except httpx.HTTPStatusError as exc:
         logger.error("Gemini chat error %s", exc.response.status_code)
