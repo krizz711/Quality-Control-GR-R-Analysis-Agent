@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Arad Quality Intelligence</title>
+<link rel="icon" href="assets/arad-mark.svg" />
+<link rel="stylesheet" href="../_ds/arad-quality-intelligence-design-system-813b733e-90fe-4aa0-bbfd-b4279f08d13e/styles.css" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--color-bg); color: var(--color-text); font-family: var(--font-sans); font-size: 15px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  #root { height: 100vh; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #3A4560; border-radius: 999px; border: 2px solid var(--color-bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #4E5E80; }
+  ::selection { background: rgba(59,130,246,.3); }
+
+  /* ───────────────────────── KEYFRAME LIBRARY ───────────────────────── */
+  @keyframes arad-pulse { 0% { transform: scale(1); opacity: .6 } 70% { transform: scale(2.5); opacity: 0 } 100% { opacity: 0 } }
+  @keyframes arad-pulse-fast { 0% { transform: scale(1); opacity: .6 } 70% { transform: scale(2.2); opacity: 0 } 100% { opacity: 0 } }
+  @keyframes arad-shimmer { 0% { background-position: -360px 0 } 100% { background-position: 360px 0 } }
+  @keyframes arad-runbar { 0% { transform: translateX(-100%) } 100% { transform: translateX(100%) } }
+  @keyframes arad-spin { to { transform: rotate(360deg) } }
+  @keyframes arad-page-enter { from { transform: translateY(8px) } to { transform: none } }
+  @keyframes arad-kpi-in { from { transform: translateY(12px) } to { transform: none } }
+  @keyframes arad-reveal-up { from { transform: translateY(14px) } to { transform: none } }
+  @keyframes arad-reveal-up-sm { from { transform: translateY(8px) } to { transform: none } }
+  @keyframes arad-fade-in { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes arad-toast-in { 0% { opacity: 0; transform: translateY(24px) scale(.96) } 60% { transform: translateY(-2px) scale(1.005) } 100% { opacity: 1; transform: none } }
+  @keyframes arad-toast-out { to { opacity: 0; transform: translateX(48px) } }
+  @keyframes arad-event-in { 0% { opacity: 0; transform: translateY(-40px) } 65% { transform: translateY(3px) } 100% { opacity: 1; transform: none } }
+  @keyframes arad-alert-in { 0% { opacity: 0; transform: translateY(-60px) } 70% { transform: translateY(5px) } 100% { opacity: 1; transform: none } }
+  @keyframes arad-border-flash { 0% { box-shadow: inset 3px 0 0 var(--flash-c), 0 0 22px -2px var(--flash-c) } 100% { box-shadow: inset 3px 0 0 transparent, 0 0 0 transparent } }
+  @keyframes arad-dropdown-in { from { opacity: 0; transform: scale(.95) translateY(-4px) } to { opacity: 1; transform: none } }
+  @keyframes arad-menuitem-in { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: none } }
+  @keyframes arad-modal-in { from { opacity: 0; transform: scale(.96) translateY(-18px) } to { opacity: 1; transform: none } }
+  @keyframes arad-tooltip-in { from { opacity: 0; transform: scale(.9) } to { opacity: 1; transform: none } }
+  @keyframes arad-result-in { from { transform: translateY(20px) } to { transform: none } }
+  @keyframes arad-badge-pop { 0% { opacity: 0; transform: scale(0) } 70% { transform: scale(1.06) } 100% { opacity: 1; transform: scale(1) } }
+  @keyframes arad-flash-text { 0% { color: #FFFFFF; text-shadow: 0 0 12px rgba(255,255,255,.6) } 100% { color: inherit; text-shadow: none } }
+  @keyframes arad-banner-down { from { transform: translateY(-100%); opacity: 0 } to { transform: none; opacity: 1 } }
+  @keyframes arad-banner-up { from { transform: none; opacity: 1 } to { transform: translateY(-100%); opacity: 0 } }
+  @keyframes arad-header-flash { 0% { background: rgba(16,185,129,.18) } 100% { background: transparent } }
+  @keyframes arad-typing { 0%,60%,100% { opacity: .25; transform: translateY(0) } 30% { opacity: 1; transform: translateY(-5px) } }
+  @keyframes arad-slide-in-x { from { opacity: 0; transform: translateX(36px) } to { opacity: 1; transform: none } }
+  @keyframes arad-row-out { to { opacity: 0; transform: translateX(-24px) } }
+  @keyframes arad-count-bounce { 0% { transform: scale(1) } 40% { transform: scale(1.4) } 100% { transform: scale(1) } }
+  @keyframes arad-grow-x { from { transform: scaleX(0) } to { transform: scaleX(1) } }
+  @keyframes arad-glow-once { 0% { box-shadow: 0 0 0 0 transparent } 35% { box-shadow: 0 0 0 1px var(--glow-c), 0 0 26px -2px var(--glow-c) } 100% { box-shadow: 0 0 0 0 transparent } }
+
+  /* Reveal helper: base state is visible; only the entrance is gated on motion preference. */
+  @media (prefers-reduced-motion: no-preference) {
+    .arad-page { animation: arad-page-enter .28s var(--ease-out) both; }
+    .arad-reveal { animation: arad-reveal-up .42s var(--ease-out) both; animation-delay: var(--d, 0ms); }
+    .arad-reveal-sm { animation: arad-reveal-up-sm .3s var(--ease-out) both; animation-delay: var(--d, 0ms); }
+    .arad-kpi-in { animation: arad-kpi-in .34s var(--ease-out) both; animation-delay: var(--d, 0ms); }
+  }
+  .arad-skel { background: linear-gradient(90deg, var(--color-surface-inset) 0%, rgba(255,255,255,.05) 50%, var(--color-surface-inset) 100%); background-size: 720px 100%; animation: arad-shimmer 1.5s linear infinite; border-radius: 6px; }
+  .arad-focus-ring:focus-visible { outline: none; box-shadow: var(--ring-focus); border-color: var(--color-primary) !important; }
+  .arad-table-row { transition: background .12s ease-out, box-shadow .15s ease-out; }
+  .arad-table-row:hover { background: var(--color-surface-hover); box-shadow: inset 2px 0 0 var(--color-primary); }
+  .arad-row-actions { opacity: 0; transition: opacity .12s ease-out; }
+  .arad-table-row:hover .arad-row-actions, .arad-row-actions.show { opacity: 1; }
+  .arad-collapse-row td { transition: padding .35s var(--ease-out), opacity .25s ease-out, line-height .35s var(--ease-out), border-color .35s; padding-top: 0 !important; padding-bottom: 0 !important; line-height: 0 !important; opacity: 0; border-color: transparent !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.js"></script>
+<script type="text/babel" src="lib.jsx"></script>
+<script type="text/babel" src="fx.jsx"></script>
+<script type="text/babel" src="charts.jsx"></script>
+<script type="text/babel" src="shell.jsx"></script>
+<script type="text/babel" src="Dashboard.jsx"></script>
+<script type="text/babel" src="GRRStudies.jsx"></script>
+<script type="text/babel" src="ReviewQueue.jsx"></script>
+<script type="text/babel" src="Alerts.jsx"></script>
+<script type="text/babel" src="Assistant.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+</body>
+</html>

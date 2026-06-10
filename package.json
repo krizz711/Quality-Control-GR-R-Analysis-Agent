@@ -1,0 +1,13 @@
+{
+  "name": "arad-quality-intelligence",
+  "version": "1.0.0",
+  "description": "Arad Quality Intelligence — QC & GR&R Analysis Dashboard",
+  "scripts": {
+    "start": "python -m http.server 5173",
+    "dev": "python -m http.server 5173",
+    "open": "start http://localhost:5173/app/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
