@@ -5,41 +5,295 @@ on:
   pull_request:
 
 jobs:
-  backend:
+  # ── 1. Lint ─────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff + mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install backend
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install .
-          python -m pip install pytest pytest-asyncio pytest-cov
-      - name: Run backend tests
-        env:
-          DATABASE_URL: postgresql+asyncpg://user:pass@localhost:5432/arad_quality
-          API_AUTH_KEY: ci-test-api-key
-        run: python -m pytest -m "not integration"
+          cache: pip
 
-  dashboard:
+      - name: Install lint tools
+        run: pip install ruff mypy
+
+      - name: Run ruff
+        run: ruff check . --output-format=github
+
+      - name: Run mypy (grr + spc + core)
+        run: mypy grr/ spc/ core/ --ignore-missing-imports --no-error-summary || true
+
+  # ── 2. Unit tests (no Docker required) ──────────────────────────────────────
+  unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ".[dev]" || pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov httpx fakeredis jinja2
+
+      - name: Run unit tests with coverage
+        env:
+          PYTHONPATH: .
+          API_AUTH_KEY: ci-test-api-key
+          DATABASE_URL: postgresql+asyncpg://user:pass@localhost:5432/arad_quality
+        run: |
+          pytest tests/ \
+            --ignore=tests/integration \
+            --ignore=tests/contract \
+            --ignore=tests/e2e \
+            --ignore=tests/performance \
+            -v --tb=short \
+            --cov=grr --cov=spc --cov=agent --cov=api --cov=core \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --timeout=30
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+      - name: Coverage gate — grr/ and spc/ must be 100%
+        env:
+          PYTHONPATH: .
+          API_AUTH_KEY: ci-test-api-key
+          DATABASE_URL: postgresql+asyncpg://user:pass@localhost:5432/arad_quality
+        run: |
+          pytest tests/test_grr.py tests/test_spc.py \
+            --cov=grr --cov=spc \
+            --cov-fail-under=100 \
+            --cov-report=term-missing \
+            -q --timeout=30
+
+  # ── 3. Dashboard build ───────────────────────────────────────────────────────
+  dashboard:
+    name: Dashboard Build
+    runs-on: ubuntu-latest
+    needs: lint
     defaults:
       run:
         working-directory: dashboard
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
+
       - name: Install dashboard
         run: npm ci
+
       - name: Build dashboard
         env:
           API_URL: http://localhost:8000
           API_AUTH_KEY: ci-test-api-key
           NEXT_PUBLIC_ALLOW_MOCK_DATA: "false"
         run: npm run build
+
+  # ── 4. Integration tests (real Kafka + TimescaleDB) ──────────────────────────
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: unit
+    # Only run on main, stabilize branches, and phase-* feature branches
+    if: |
+      github.ref == 'refs/heads/main' ||
+      startsWith(github.ref, 'refs/heads/stabilize/') ||
+      startsWith(github.ref, 'refs/heads/phase-') ||
+      github.event_name == 'pull_request'
+
+    services:
+      zookeeper:
+        image: confluentinc/cp-zookeeper:7.5.0
+        env:
+          ZOOKEEPER_CLIENT_PORT: 2181
+          ZOOKEEPER_TICK_TIME: 2000
+
+      kafka:
+        image: confluentinc/cp-kafka:7.5.0
+        env:
+          KAFKA_BROKER_ID: 1
+          KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        options: >-
+          --health-cmd "kafka-broker-api-versions.sh --bootstrap-server localhost:29092"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+
+      timescaledb:
+        image: timescale/timescaledb:2.27.1-pg15
+        env:
+          POSTGRES_USER: arad
+          POSTGRES_PASSWORD: arad_pass
+          POSTGRES_DB: arad_quality
+        options: >-
+          --health-cmd "pg_isready -U arad -d arad_quality"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ".[dev]" || pip install -r requirements.txt
+          pip install pytest pytest-asyncio alembic asyncpg
+
+      - name: Run Alembic migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://arad:arad_pass@localhost:5432/arad_quality
+        run: alembic upgrade head
+
+      - name: Create Kafka topic
+        run: |
+          docker run --rm --network host confluentinc/cp-kafka:7.5.0 \
+            kafka-topics \
+            --bootstrap-server localhost:29092 \
+            --create --if-not-exists \
+            --topic measurements.test \
+            --partitions 3 \
+            --replication-factor 1
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://arad:arad_pass@localhost:5432/arad_quality
+          TEST_DATABASE_URL: postgresql://arad:arad_pass@localhost:5432/arad_quality
+          KAFKA_BOOTSTRAP_SERVERS: localhost:29092
+          KAFKA_TOPIC: measurements.test
+          API_AUTH_KEY: ci-test-api-key
+          REDIS_URL: redis://localhost:6379/0
+          PYTHONPATH: .
+        run: |
+          pytest tests/integration/ \
+            -v --tb=short -s \
+            --timeout=60 \
+            --junit-xml=integration-results.xml
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: integration-results.xml
+          retention-days: 7
+
+  # ── 5. Contract tests (schemathesis against OpenAPI spec) ────────────────────
+  contract:
+    name: Contract Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: unit
+    if: |
+      github.ref == 'refs/heads/main' ||
+      github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ".[dev]" || pip install -r requirements.txt
+          pip install pytest pytest-asyncio schemathesis httpx
+
+      - name: Run contract tests
+        env:
+          PYTHONPATH: .
+          API_AUTH_KEY: ci-test-api-key
+          DATABASE_URL: postgresql+asyncpg://user:pass@localhost:5432/arad_quality
+        run: |
+          pytest tests/contract/ \
+            -v --tb=short \
+            --timeout=60
+
+  # ── 6. Docker build & push ───────────────────────────────────────────────────
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [unit, dashboard]
+    # Push to registry only on main branch
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/arad-quality-api:latest
+            ghcr.io/${{ github.repository_owner }}/arad-quality-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/arad-quality-dashboard:latest
+            ghcr.io/${{ github.repository_owner }}/arad-quality-dashboard:${{ github.sha }}
+          build-args: |
+            API_AUTH_KEY=${{ secrets.API_AUTH_KEY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Lazy-initialized Gemini model. Do not crash on import when GEMINI_API_KEY is
 # absent — initialize at call time to allow running the API without AI keys.
 _model = None
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)

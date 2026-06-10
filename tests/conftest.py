@@ -15,6 +15,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import asyncio
 
+# Make the project root importable when running pytest from any directory.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+os.environ.setdefault("API_AUTH_KEY", "test-api-key")
+# Provide a dummy DATABASE_URL so Settings() can be instantiated without a real DB.
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/arad_quality")
+
+# On Windows, asyncpg works best with the SelectorEventLoop policy
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
 
 @pytest.fixture
 async def fake_redis():
@@ -85,42 +101,23 @@ async def async_client():
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
 
-# Make the project root importable when running pytest from any directory.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-os.environ.setdefault("API_AUTH_KEY", "test-api-key")
-
-# Tests require a real Postgres/TimescaleDB. Fail fast if TEST_DATABASE_URL
-# is not provided so developers run the DB in Docker compose instead of
-# accidentally using SQLite which gives false confidence.
-if not os.environ.get("TEST_DATABASE_URL"):
-    raise RuntimeError(
-        "TEST_DATABASE_URL is not set. Run: docker compose up -d timescaledb redis "
-        "then: set TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arad_quality"
-    )
-
-# On Windows, asyncpg works best with the SelectorEventLoop policy
-if sys.platform == "win32":
-    try:
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except Exception:
-        pass
-
 
 @pytest.fixture
 async def db_conn():
-    """Provide an `asyncpg.Connection` with an active transaction that is
+    """Provide an asyncpg.Connection with an active transaction that is
     rolled back after the test to keep the test DB clean.
+
+    Requires TEST_DATABASE_URL to be set. Skips the test if not available,
+    so pure unit tests run cleanly in CI without a live database.
     """
     import asyncpg
 
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
-        raise RuntimeError(
-            "TEST_DATABASE_URL is not set. Run docker compose up -d timescaledb then "
-            "set TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arad_quality"
+        pytest.skip(
+            "TEST_DATABASE_URL is not set — skipping DB-dependent test. "
+            "Run: docker compose up -d timescaledb "
+            "then: set TEST_DATABASE_URL=postgresql://arad:arad_pass@localhost:5432/arad_quality"
         )
 
     conn = await asyncpg.connect(url)

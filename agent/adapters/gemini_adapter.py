@@ -21,7 +21,9 @@ class GeminiAdapter(MLToolAdapter):
     ``get_prediction`` generates a quality prediction via prompting.
     """
 
-    def __init__(self, api_key: str | None = None, model_name: str = "gemini-1.5-flash") -> None:
+    def __init__(self, api_key: str | None = None, model_name: str | None = None) -> None:
+        import os
+        model_name = model_name or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.model_name = model_name
         self._model = None

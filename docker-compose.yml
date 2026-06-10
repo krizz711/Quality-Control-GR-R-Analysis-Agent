@@ -14,6 +14,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          memory: 512M
     networks:
       - arad-network
 
@@ -24,6 +31,11 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@arad.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks:
       - arad-network
 
@@ -36,6 +48,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          memory: 128M
     networks:
       - arad-network
 
@@ -60,6 +79,13 @@ services:
       interval: 15s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
     networks:
       - arad-network
 
@@ -72,6 +98,11 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: arad-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks:
       - arad-network
 
@@ -84,6 +115,8 @@ services:
       timescaledb:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -110,6 +143,13 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          memory: 256M
     networks:
       - arad-network
     command: ["sh", "-c", "./scripts/ensure_db_ready.sh && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
@@ -135,6 +175,13 @@ services:
       API_AUTH_KEY: ${API_AUTH_KEY}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
     networks:
       - arad-network
 
@@ -151,6 +198,13 @@ services:
       API_URL: ${API_URL:-http://api:8000}
       API_AUTH_KEY: ${API_AUTH_KEY}
       NEXT_PUBLIC_ALLOW_MOCK_DATA: ${NEXT_PUBLIC_ALLOW_MOCK_DATA:-false}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
     networks:
       - arad-network
 
@@ -177,6 +231,13 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          memory: 256M
     networks:
       - arad-network
 
@@ -186,6 +247,11 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks:
       - arad-network
 
@@ -198,6 +264,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks:
       - arad-network
 
@@ -208,10 +279,18 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
     networks:
       - arad-network
 

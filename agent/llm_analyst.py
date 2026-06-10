@@ -376,6 +376,32 @@ Respond ONLY with this JSON (no markdown, no preamble):
     )
 
 
+async def generate_spc_narrative(
+    violations: dict[str, list[int]],
+    chart_type: str,
+    process_name: str,
+    api_key: str,
+    *,
+    control_limits: dict[str, float] | None = None,
+    recent_values: list[float] | None = None,
+) -> SPCNarrative:
+    """Generate a short SPC narrative from Nelson rule violations.
+
+    This is the lightweight public helper used by tests and callers that only
+    know the process name. The fuller ``interpret_spc_violations`` API remains
+    available when part, characteristic, limits, and recent values are known.
+    """
+    return await interpret_spc_violations(
+        chart_type=chart_type,
+        part_number=process_name,
+        characteristic_name="process characteristic",
+        violated_rules=violations,
+        control_limits=control_limits or {"ucl": 0.0, "cl": 0.0, "lcl": 0.0},
+        recent_values=recent_values or [],
+        api_key=api_key,
+    )
+
+
 # ── Predictive Monitoring ─────────────────────────────────────────────────────
 
 async def generate_predictive_insight(

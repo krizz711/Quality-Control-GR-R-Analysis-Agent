@@ -1,4 +1,4 @@
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,33 +17,33 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "http://localhost:5000"
 
     # Gemini
-    gemini_api_key: str = ""
+    gemini_api_key: str = Field(default="", repr=False)
 
     # Auth / Rate limiting
-    jwt_secret: str = "dev-jwt-secret-change-me"
+    jwt_secret: str = Field(default="dev-jwt-secret-change-me", repr=False)
     redis_url: str = "redis://localhost:6379/0"
 
     # Alerts — Slack
-    slack_webhook_url: str = ""
+    slack_webhook_url: str = Field(default="", repr=False)
 
     # Alerts — Email (SMTP)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
-    smtp_password: str = ""
+    smtp_password: str = Field(default="", repr=False)
     smtp_from_address: str = ""
     alert_email_recipients: str = ""  # comma-separated
 
     # Alerts — SMS (generic webhook, e.g. Twilio/Vonage)
     sms_webhook_url: str = ""
-    sms_auth_token: str = ""
+    sms_auth_token: str = Field(default="", repr=False)
     sms_from_number: str = ""
     sms_to_numbers: str = ""  # comma-separated
 
     # JIRA (optional)
     jira_url: str = ""
     jira_email: str = ""
-    jira_api_token: str = ""
+    jira_api_token: str = Field(default="", repr=False)
     jira_project_key: str = "QUAL"
 
     # QMS integration
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     # Twilio SDK (optional — falls back to generic SMS webhook)
     twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
+    twilio_auth_token: str = Field(default="", repr=False)
 
     # ML Tool adapter selection (mlflow | gemini)
     ml_tool_name: str = "mlflow"
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     log_level: str = "INFO"
-    api_auth_key: str
+    api_auth_key: str = Field(repr=False)
     frontend_url: str = ""
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     allow_mock_data: bool = False

@@ -17,9 +17,10 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 # Configure Gemini API
+import os as _os
 if settings.gemini_api_key:
     genai.configure(api_key=settings.gemini_api_key)
-    MODEL_NAME = "gemini-1.5-pro"
+    MODEL_NAME = _os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     logger.info("Gemini API configured successfully")
 else:
     logger.warning("GEMINI_API_KEY not configured. AI features will be limited.")
