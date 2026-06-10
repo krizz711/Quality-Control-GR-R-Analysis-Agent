@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 10
 
+_METRICS_INTERVAL = 30  # seconds between metric refresh cycles
+
 
 def _asyncpg_dsn() -> str:
     url = make_url(settings.database_url)
@@ -31,6 +33,25 @@ async def _initialize_database_schema() -> None:
     if engine.url.drivername.startswith("sqlite"):
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+
+
+async def _metrics_refresher(pool: asyncpg.Pool, stop_event: asyncio.Event) -> None:
+    """Periodically update Prometheus gauges that require DB queries."""
+    from api.main import alert_queue_depth
+    while not stop_event.is_set():
+        try:
+            count = await pool.fetchval(
+                "SELECT COUNT(*) FROM quality_violations WHERE alert_sent = FALSE"
+            )
+            alert_queue_depth.set(count or 0)
+        except Exception as exc:
+            logger.warning("metrics_refresh_failed error=%s", exc)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(stop_event.wait()), timeout=_METRICS_INTERVAL
+            )
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _broadcast_drainer(stop_event: asyncio.Event) -> None:
@@ -92,20 +113,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _broadcast_drainer(stop_event),
         name="realtime-broadcast-drainer",
     )
+    metrics_task = asyncio.create_task(
+        _metrics_refresher(pool, stop_event),
+        name="metrics-refresher",
+    )
 
     app.state.db_pool = pool
     app.state.consumer_task = consumer_task
     app.state.broadcast_task = broadcast_task
+    app.state.metrics_task = metrics_task
 
     try:
         yield
     finally:
         stop_event.set()
-        for task in (consumer_task, broadcast_task):
+        for task in (consumer_task, broadcast_task, metrics_task):
             if task is not None:
                 task.cancel()
         await stop_realtime_runtime()
-        for task in (consumer_task, broadcast_task):
+        for task in (consumer_task, broadcast_task, metrics_task):
             if task is not None:
                 with suppress(asyncio.CancelledError, Exception):
                     await task

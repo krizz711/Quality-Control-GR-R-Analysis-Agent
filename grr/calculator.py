@@ -19,6 +19,20 @@ from scipy import stats
 logger = logging.getLogger(__name__)
 
 
+def _d2_star(sample_size: int) -> float:
+    d2_star = {
+        2: 1.128, 3: 1.693, 4: 2.059, 5: 2.326,
+        6: 2.534, 7: 2.704, 8: 2.847, 9: 2.970, 10: 3.179
+    }
+    if sample_size in d2_star:
+        return d2_star[sample_size]
+    if sample_size > 10:
+        return float(2 * stats.norm.ppf((sample_size - 0.375) / (sample_size + 0.25)))
+    raise ValueError(
+        f"Value not supported in d2* table: {sample_size}. Table supports values >= 2."
+    )
+
+
 @dataclass
 class GRRResult:
     """Container for GR&R study outputs."""
@@ -88,17 +102,9 @@ def grr_xbar_r(
     R_p = x_bar_part.max() - x_bar_part.min()
 
     # 6. LOOK UP d2* CONSTANTS
-    d2_star = {
-        2: 1.128, 3: 1.693, 4: 2.059, 5: 2.326,
-        6: 2.534, 7: 2.704, 8: 2.847, 9: 2.970, 10: 3.179
-    }
-
-    try:
-        d2_EV = d2_star[k]
-        d2_AV = d2_star[n_operators]
-        d2_PV = d2_star[n_parts]
-    except KeyError as e:
-        raise ValueError(f"Value not supported in d2* table: {e.args[0]}. Table supports values 2-10. For n>10 use the ANOVA method instead.")
+    d2_EV = _d2_star(k)
+    d2_AV = _d2_star(n_operators)
+    d2_PV = _d2_star(n_parts)
 
     # 7. COMPUTE VARIANCE COMPONENTS
     EV = R_bar / d2_EV
