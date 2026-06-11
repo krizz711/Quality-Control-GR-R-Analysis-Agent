@@ -65,7 +65,6 @@ class QualityOrchestrator:
     def __init__(self) -> None:
         self.alert_engine = AlertEngine()
         self.logger = logging.getLogger(__name__)
-        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
         self.logger.info("QualityOrchestrator initialised")
 
     # ── Kafka integration ────────────────────────────────────────────────────
@@ -213,6 +212,83 @@ class QualityOrchestrator:
 
         await self.alert_engine.process_pending_violations()
 
+        # ── Predictive layer: CUSUM + EWMA ────────────────────────────────────
+        from spc.cusum import cusum_from_limits
+        from spc.ewma import ewma_from_limits
+        from spc.anomaly_detector import linear_trend_extrapolation
+
+        cusum_result = cusum_from_limits(chart_values, i_chart.limits.ucl, i_chart.limits.lcl)
+        ewma_result = ewma_from_limits(chart_values, i_chart.limits.ucl, i_chart.limits.lcl)
+        slope, drift_direction, obs_until = linear_trend_extrapolation(
+            chart_values, i_chart.limits.ucl, i_chart.limits.lcl
+        )
+
+        # Emit predictive alert when breach is imminent (≤5 measurements away)
+        if cusum_result.shift_detected:
+            from agent.alert_manager import AlertManager, AlertEvent
+            alert_ev = AlertEvent(
+                type="spc_predicted_breach",
+                severity="critical",
+                message=(
+                    f"CUSUM shift detected — {cusum_result.shift_direction} shift on "
+                    f"{event.get('part_number')} / {event.get('characteristic_name')}. "
+                    f"First signal at index {cusum_result.first_signal_index}."
+                ),
+                process_name=event.get("part_number", "unknown"),
+                payload={
+                    "part_number": event.get("part_number"),
+                    "characteristic_name": event.get("characteristic_name"),
+                    "shift_direction": cusum_result.shift_direction,
+                    "first_signal_index": cusum_result.first_signal_index,
+                },
+            )
+            await AlertManager().send(alert_ev)
+        elif obs_until is not None and obs_until <= 5:
+            from agent.alert_manager import AlertManager, AlertEvent
+            alert_ev = AlertEvent(
+                type="spc_predicted_breach",
+                severity="warning",
+                message=(
+                    f"Predicted UCL/LCL breach in ~{obs_until} measurements — "
+                    f"{drift_direction} drift on "
+                    f"{event.get('part_number')} / {event.get('characteristic_name')}."
+                ),
+                process_name=event.get("part_number", "unknown"),
+                payload={
+                    "part_number": event.get("part_number"),
+                    "characteristic_name": event.get("characteristic_name"),
+                    "obs_until_breach": obs_until,
+                    "drift_direction": drift_direction,
+                },
+            )
+            await AlertManager().send(alert_ev)
+
+        # Log prediction run to MLflow
+        try:
+            adapter = get_adapter()
+            await adapter.log_experiment(
+                experiment_name="spc_predictions",
+                run_name=f"{event.get('part_number', 'unknown')}_{event.get('characteristic_name', 'unknown')}",
+                params={
+                    "model_type": "cusum+ewma",
+                    "input_window": len(values),
+                    "process_id": event.get("part_number", "unknown"),
+                    "characteristic": event.get("characteristic_name", "unknown"),
+                },
+                metrics={
+                    "cusum_violations": float(len(cusum_result.shift_indices)),
+                    "ewma_violations": float(len(ewma_result.violation_indices)),
+                    "trend_slope": round(float(slope), 6),
+                    "obs_until_breach": float(obs_until) if obs_until is not None else -1.0,
+                },
+                tags={
+                    "shift_detected": str(cusum_result.shift_detected),
+                    "drift_direction": drift_direction,
+                },
+            )
+        except Exception:
+            self.logger.warning("MLflow SPC prediction logging failed (non-fatal)", exc_info=True)
+
         await publish_realtime_event(
             {
                 "type": "spc.analysis",
@@ -222,6 +298,10 @@ class QualityOrchestrator:
                 "values_used": len(values),
                 "rule_1_violations": len(rule1),
                 "total_violations": sum(len(v) for v in violations.values()),
+                "cusum_shift_detected": cusum_result.shift_detected,
+                "ewma_trend_detected": ewma_result.shift_detected,
+                "predicted_breach_in": obs_until,
+                "drift_direction": drift_direction,
                 "timestamp": event.get("timestamp"),
                 "source_event_id": event.get("event_id") or event.get("source_event_id"),
             }
@@ -233,6 +313,10 @@ class QualityOrchestrator:
             "values_used": len(values),
             "rule_1_violations": len(rule1),
             "total_violations": sum(len(v) for v in violations.values()),
+            "cusum_shift_detected": cusum_result.shift_detected,
+            "ewma_trend_detected": ewma_result.shift_detected,
+            "predicted_breach_in": obs_until,
+            "drift_direction": drift_direction,
         }
 
     async def _handle_grr_event(self, event: dict) -> dict:
@@ -324,21 +408,42 @@ class QualityOrchestrator:
             }
         )
 
-        adapter = get_adapter()
-        await adapter.log_experiment(
-            experiment_name="grr_studies",
-            run_name=study_id,
-            metrics={
-                "grr_pct": result.total_grr,
-                "ndc": result.ndc,
-                "ev": result.repeatability,
-                "av": result.reproducibility,
-            },
-            tags={
-                "acceptance": verdict.level.value,
-                "equipment_id": event.get("equipment_id", "unknown"),
-            },
-        )
+        details = result.details or {}
+        operators = [
+            m.get("operator", "unknown")
+            for m in measurements
+            if isinstance(m, dict)
+        ]
+        unique_operators = sorted(set(operators))
+
+        try:
+            adapter = get_adapter()
+            await adapter.log_experiment(
+                experiment_name="grr_studies",
+                run_name=study_id,
+                params={
+                    "method": details.get("method", "xbar_r"),
+                    "n_operators": details.get("n_operators", len(unique_operators)),
+                    "n_parts": details.get("n_parts", 0),
+                    "n_trials": details.get("n_trials", 0),
+                    "characteristic_name": event.get("characteristic_name", "unknown"),
+                },
+                metrics={
+                    "grr_pct": result.total_grr,
+                    "ndc": float(result.ndc),
+                    "ev": result.repeatability,
+                    "av": result.reproducibility,
+                    "pv": result.part_variation,
+                },
+                tags={
+                    "acceptance": verdict.level.value,
+                    "pass_fail": "pass" if verdict.level.value == "acceptable" else "fail",
+                    "equipment_id": event.get("equipment_id", "unknown"),
+                    "operator_list": ",".join(unique_operators) if unique_operators else "unknown",
+                },
+            )
+        except Exception as mlflow_exc:
+            self.logger.warning("MLflow logging failed (non-fatal): %s", mlflow_exc)
 
         return {
             "status": "processed",

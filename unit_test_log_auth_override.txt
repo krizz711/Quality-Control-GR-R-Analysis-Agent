@@ -1,0 +1,47 @@
+﻿.......................................................................  [100%]
+============================== warnings summary ===============================
+..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\arad-quality-agent-A6H20bJV-py3.12\Lib\site-packages\mlflow\utils\pydantic_utils.py:33
+  C:\Users\Asus\AppData\Local\pypoetry\Cache\virtualenvs\arad-quality-agent-A6H20bJV-py3.12\Lib\site-packages\mlflow\utils\pydantic_utils.py:33: PydanticDeprecatedSince212: Using `@model_validator` with mode='after' on a classmethod is deprecated. Instead, use an instance method. See the documentation at https://docs.pydantic.dev/2.13/concepts/validators/#model-after-validator. Deprecated in Pydantic V2.12 to be removed in V3.0.
+    return pydantic_model_validator(mode=mode)(func)
+
+..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\arad-quality-agent-A6H20bJV-py3.12\Lib\site-packages\mlflow\gateway\config.py:454
+  C:\Users\Asus\AppData\Local\pypoetry\Cache\virtualenvs\arad-quality-agent-A6H20bJV-py3.12\Lib\site-packages\mlflow\gateway\config.py:454: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class Route(ConfigModel):
+
+..\..\..\..\..\AppData\Local\pypoetry\Cache\virtualenvs\arad-quality-agent-A6H20bJV-py3.12\Lib\site-packages\pythonjsonlogger\jsonlogger.py:11
+  C:\Users\Asus\AppData\Local\pypoetry\Cache\virtualenvs\arad-quality-agent-A6H20bJV-py3.12\Lib\site-packages\pythonjsonlogger\jsonlogger.py:11: DeprecationWarning: pythonjsonlogger.jsonlogger has been moved to pythonjsonlogger.json
+    warnings.warn(
+
+tests/test_api_grr.py::test_create_grr_study_xbar_r
+  C:\Users\Asus\OneDrive\Desktop\Projects\Quality_Control_&_GR&R_Analysis_Agent\arad-quality-agent\api\main.py:271: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    session.add(study)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_api_grr.py::test_create_grr_study_xbar_r
+  C:\Users\Asus\OneDrive\Desktop\Projects\Quality_Control_&_GR&R_Analysis_Agent\arad-quality-agent\api\main.py:279: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    session.add(review_item)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_api_grr.py::test_create_grr_study_xbar_r
+  C:\Users\Asus\OneDrive\Desktop\Projects\Quality_Control_&_GR&R_Analysis_Agent\arad-quality-agent\api\main.py:281: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    session.add(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_api_reviews.py::test_approve_review_returns_decision_in_response
+  C:\Users\Asus\OneDrive\Desktop\Projects\Quality_Control_&_GR&R_Analysis_Agent\arad-quality-agent\api\main.py:558: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    session.add(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_api_spc.py::test_analyze_spc_i_mr
+tests/test_api_spc.py::test_analyze_spc_rule_1_persisted
+  C:\Users\Asus\OneDrive\Desktop\Projects\Quality_Control_&_GR&R_Analysis_Agent\arad-quality-agent\api\main.py:442: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    session.add(violation)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+71 passed, 1 deselected, 9 warnings in 11.92s

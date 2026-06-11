@@ -1,6 +1,9 @@
 # ─── Environment ─────────────────────────────────────────────────────────────
 .env
 
+# Legacy nested clone — do not track; use repo root only
+arad-quality-agent/
+
 # ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

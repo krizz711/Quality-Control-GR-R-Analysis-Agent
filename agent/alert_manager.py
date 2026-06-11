@@ -23,9 +23,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 try:
-    import aioredis
-except Exception:  # pragma: no cover - test environments may use fakeredis instead
-    aioredis = None
+    from redis.asyncio import Redis as AsyncRedis
+except ImportError:  # pragma: no cover - test environments may use fakeredis instead
+    AsyncRedis = None
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -68,16 +68,16 @@ class AlertManager:
         dedupe_ttl: Optional[int] = None,
     ):
         self.redis_url = redis_url or settings.redis_url
-        self._redis_client: Optional[aioredis.Redis] = redis_client
+        self._redis_client: Optional[object] = redis_client
         if dedupe_ttl is not None:
             self.DEDUPE_TTL = dedupe_ttl
 
-    async def _get_redis(self) -> aioredis.Redis:
+    async def _get_redis(self):
         if self._redis_client is not None:
             return self._redis_client
-        if aioredis is None:
-            raise RuntimeError("aioredis is not available; pass a redis_client for tests")
-        self._redis_client = await aioredis.from_url(self.redis_url)
+        if AsyncRedis is None:
+            raise RuntimeError("redis.asyncio is not available; pass a redis_client for tests")
+        self._redis_client = AsyncRedis.from_url(self.redis_url)
         return self._redis_client
 
     def _dedupe_key(self, ev: AlertEvent) -> str:
@@ -160,9 +160,11 @@ class AlertManager:
         # ── 1. Deduplication check ───────────────────────────────────────
         dedupe_key = self._dedupe_key(ev)
         redis = await self._get_redis()
-        if await redis.get(dedupe_key):
+        existing_id = await redis.get(dedupe_key)
+        if existing_id:
             logger.info("Alert dedupe hit, skipping: %s %s", ev.type, ev.process_name)
-            return
+            raw = existing_id.decode() if isinstance(existing_id, bytes) else str(existing_id)
+            return uuid.UUID(raw)
 
         # ── 2. Generate LLM explanation (best-effort) ────────────────────
         llm_text = await self._generate_llm_explanation(ev)

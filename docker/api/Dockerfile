@@ -25,7 +25,8 @@ COPY spc ./spc
 RUN pip install --upgrade pip \
     && pip install .
 
-RUN chmod +x ./scripts/ensure_db_ready.sh || true
+RUN sed -i 's/\r$//' ./scripts/ensure_db_ready.sh ./scripts/docker_api_entrypoint.sh 2>/dev/null || true \
+    && chmod +x ./scripts/ensure_db_ready.sh ./scripts/docker_api_entrypoint.sh ./scripts/build_database_url.py
 
 EXPOSE 8000
 

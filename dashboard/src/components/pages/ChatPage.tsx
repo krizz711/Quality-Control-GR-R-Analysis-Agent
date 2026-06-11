@@ -1,33 +1,100 @@
 "use client";
 
-/* AI Assistant — prototype-exact chat with system-context sidebar, wired to /api/v1/chat. */
-
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ArrowUp, BarChart3, ClipboardCheck, Sparkles, TriangleAlert } from "lucide-react";
-import { apiClient, getAlerts, getGRRHistory, getReviews } from "@/api/apiClient";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Send,
+  Sparkles,
+  User,
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  ThumbsUp,
+  ThumbsDown,
+  RotateCcw,
+  Lightbulb,
+  XCircle,
+} from "lucide-react";
+import { exampleChat, type ChatMessage } from "@/lib/mock-data";
+import { apiClient } from "@/api/apiClient";
+import { showToast } from "@/api/apiClient";
 import { useAppStore } from "@/lib/store";
 
-const SUGGESTED = [
-  "Which equipment had the worst GR&R this week?",
-  "Show me trends this week",
-  "Which equipment needs review?",
+const container = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { staggerChildren: 0.05 } },
+};
+
+const suggestions = [
+  "Which equipment had worst GR&R this week?",
+  "Why is CMM-001 showing control violations?",
+  "Show all critical alerts from the last 24 hours",
+  "What is the current Cpk for bore diameter on P-2847?",
+  "Recommend corrective actions for VMM-003",
+  "Generate a shift summary for quality team",
 ];
 
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: Date;
-}
+function MetricWidget({ data }: { data: Record<string, unknown> }) {
+  const grr = data.grr_pct as number;
+  const verdict = data.verdict as string;
+  const evPct = data.ev_pct as number;
+  const avPct = data.av_pct as number;
+  const ndc = data.ndc as number;
 
-function timeStamp(d: Date) {
-  return d.toTimeString().slice(0, 8);
+  return (
+    <div
+      className="rounded-xl p-4 mt-3"
+      style={{
+        background: "var(--bg-elevated)",
+        border: `1px solid ${verdict === "unacceptable" ? "rgba(248,113,113,0.15)" : "var(--border-subtle)"}`,
+      }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+          GR&R Result
+        </span>
+        <span
+          className={`badge ${
+            verdict === "acceptable" ? "badge-success" : verdict === "conditional" ? "badge-warning" : "badge-critical"
+          }`}
+        >
+          {verdict === "acceptable" ? <CheckCircle2 size={9} /> : verdict === "conditional" ? <AlertTriangle size={9} /> : <XCircle size={9} />}
+          {verdict}
+        </span>
+      </div>
+      <div className="flex items-end gap-3 mb-3">
+        <span
+          className="text-3xl font-black"
+          style={{
+            color: verdict === "acceptable" ? "var(--success)" : verdict === "conditional" ? "var(--warning)" : "var(--critical)",
+          }}
+        >
+          {grr}%
+        </span>
+        <span className="text-[11px] pb-1" style={{ color: "var(--text-muted)" }}>GR&R</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { label: "EV %", value: `${evPct}%`, sub: "Repeatability" },
+          { label: "AV %", value: `${avPct}%`, sub: "Reproducibility" },
+          { label: "NDC", value: ndc.toString(), sub: ndc >= 5 ? "Adequate" : "Low" },
+        ].map((m, i) => (
+          <div key={i} className="rounded-lg p-2.5" style={{ background: "var(--bg-hover)" }}>
+            <div className="text-[9px] font-medium uppercase" style={{ color: "var(--text-ghost)" }}>{m.label}</div>
+            <div className="text-sm font-bold font-mono" style={{ color: "var(--text-primary)" }}>{m.value}</div>
+            <div className="text-[9px]" style={{ color: "var(--text-ghost)" }}>{m.sub}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function MarkdownText({ content }: { content: string }) {
+  // Simple markdown-like rendering
   const parts = content.split(/(\*\*.*?\*\*|\n)/g);
   return (
-    <div style={{ fontFamily: "var(--font-sans)", fontSize: 13.5, lineHeight: 1.55, color: "var(--text-secondary)" }}>
+    <div className="text-[13px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
       {parts.map((part, i) => {
         if (part === "\n") return <br key={i} />;
         if (part.startsWith("**") && part.endsWith("**")) {
@@ -37,13 +104,9 @@ function MarkdownText({ content }: { content: string }) {
             </strong>
           );
         }
+        // Handle list items
         if (part.startsWith("- ") || part.match(/^\d+\. /)) {
-          return (
-            <span key={i} style={{ display: "flex", gap: 8 }}>
-              <span style={{ color: "var(--accent-ai)", flex: "none" }}>▸</span>
-              <span>{part.replace(/^- /, "")}</span>
-            </span>
-          );
+          return <span key={i} className="block ml-3">{part}</span>;
         }
         return <span key={i}>{part}</span>;
       })}
@@ -51,388 +114,373 @@ function MarkdownText({ content }: { content: string }) {
   );
 }
 
-function TypingDots() {
-  return (
-    <div style={{ display: "flex", gap: 4, padding: "4px 0" }}>
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          style={{ width: 6, height: 6, borderRadius: 999, background: "var(--accent-ai)", animation: `arad-typing 1.2s ${i * 0.15}s infinite` }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function AIMessage({ content, typing, ts }: { content?: string; typing?: boolean; ts?: Date }) {
-  return (
-    <div style={{ display: "flex", gap: 12, maxWidth: "80%", animation: "arad-reveal-up-sm .3s var(--ease-out)" }}>
-      <div
-        style={{
-          width: 30,
-          height: 30,
-          borderRadius: 8,
-          background: "var(--bg-elevated)",
-          border: "1px solid var(--border-default)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flex: "none",
-        }}
-      >
-        <Sparkles size={15} style={{ color: "var(--accent-ai)" }} />
-      </div>
-      <div
-        style={{
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border-default)",
-          borderLeft: "3px solid var(--accent-ai)",
-          borderRadius: "0 var(--radius-lg) var(--radius-lg) var(--radius-lg)",
-          padding: "14px 16px",
-        }}
-      >
-        {typing ? (
-          <TypingDots />
-        ) : (
-          <>
-            <MarkdownText content={content || ""} />
-            {ts && (
-              <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)" }}>{timeStamp(ts)}</div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function UserMessage({ text, ts }: { text: string; ts: Date }) {
-  return (
-    <div style={{ alignSelf: "flex-end", maxWidth: "70%", animation: "arad-reveal-up-sm .25s var(--ease-out)" }}>
-      <div
-        style={{
-          background: "linear-gradient(180deg, #1e3a8a, #1e40af)",
-          border: "1px solid rgba(59,130,246,.4)",
-          borderRadius: "var(--radius-lg) 0 var(--radius-lg) var(--radius-lg)",
-          padding: "12px 16px",
-          fontFamily: "var(--font-sans)",
-          fontSize: 13.5,
-          color: "#fff",
-          lineHeight: 1.5,
-        }}
-      >
-        {text}
-      </div>
-      <div style={{ textAlign: "right", marginTop: 4, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-muted)" }}>
-        {timeStamp(ts)}
-      </div>
-    </div>
-  );
-}
-
-function ContextCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string | number }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: 12,
-        background: "var(--bg-primary)",
-        border: "1px solid var(--border-default)",
-        borderRadius: "var(--radius-md)",
-      }}
-    >
-      <span style={{ color: "var(--text-muted)", display: "flex" }}>{icon}</span>
-      <span style={{ flex: 1, fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--text-secondary)" }}>{label}</span>
-      <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>{value}</span>
-    </div>
-  );
-}
-
-function SuggestChip({ label, onClick }: { label: string; onClick: () => void }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        textAlign: "left",
-        padding: "10px 12px",
-        background: "transparent",
-        border: `1px solid ${hover ? "var(--accent-ai)" : "var(--border-default)"}`,
-        borderRadius: "var(--radius-md)",
-        cursor: "pointer",
-        fontFamily: "var(--font-sans)",
-        fontSize: 12.5,
-        color: hover ? "var(--text-primary)" : "var(--text-secondary)",
-        transition: "all 150ms ease-out",
-      }}
-    >
-      {label}
-    </button>
-  );
-}
-
 export default function ChatPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(exampleChat);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const [spin, setSpin] = useState(false);
-  const [focus, setFocus] = useState(false);
-  const [typingIn, setTypingIn] = useState(false);
-  const [context, setContext] = useState<{ studies: number | string; violations: number | string; reviews: number | string }>({
-    studies: "—",
-    violations: "—",
-    reviews: "—",
-  });
   const scrollRef = useRef<HTMLDivElement>(null);
-  const typeTimer = useRef<number | null>(null);
   const { pendingChatPrompt, setPendingChatPrompt } = useAppStore();
 
-  // System context — live counts from the backend.
-  useEffect(() => {
-    let cancelled = false;
-    const loadContext = async () => {
-      const [history, alerts, reviews] = await Promise.all([
-        getGRRHistory().catch(() => null),
-        getAlerts({ status: "active", limit: 100 }).catch(() => null),
-        getReviews().catch(() => null),
-      ]);
-      if (cancelled) return;
-      setContext({
-        studies: history ? history.length : "—",
-        violations: alerts ? alerts.items.length : "—",
-        reviews: reviews ? reviews.length : "—",
+  const sendMessage = useCallback(async (prompt: string) => {
+    const userText = prompt.trim();
+    if (!userText) {
+      return;
+    }
+
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      role: "user",
+      content: userText,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsTyping(true);
+
+    try {
+      const history = messages
+        .filter((message) => message.id !== "welcome")
+        .map((message) => ({
+          role: message.role,
+          content: message.content,
+        }));
+
+      const data = await apiClient.post<{ answer: string; context_used: string[] }>("/api/v1/chat", {
+        question: userText,
+        conversation_history: history,
       });
-    };
-    void loadContext();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
-  const sendMessage = useCallback(
-    async (prompt: string) => {
-      const userText = prompt.trim();
-      if (!userText) return;
-
-      setInput("");
-      setSpin(true);
-      setTimeout(() => setSpin(false), 450);
-
-      const userMsg: ChatMessage = { id: `msg-${Date.now()}`, role: "user", content: userText, timestamp: new Date() };
-      setMessages((prev) => [...prev, userMsg]);
-      setIsTyping(true);
-
-      try {
-        const history = messages.map((m) => ({ role: m.role, content: m.content }));
-        const data = await apiClient.post<{ answer: string; context_used: string[] }>("/api/v1/chat", {
-          question: userText,
-          conversation_history: history,
-        });
-        setMessages((prev) => [
-          ...prev,
-          { id: `msg-${Date.now() + 1}`, role: "assistant", content: data.answer || "I received an empty response.", timestamp: new Date() },
-        ]);
-      } catch (err) {
-        console.error("Chat API Error:", err);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `msg-${Date.now() + 1}`,
-            role: "assistant",
-            content: "**Connection error.** I could not reach the Arad Agent backend. Verify the API is running and check Settings (sidebar).",
-            timestamp: new Date(),
-          },
-        ]);
-      } finally {
-        setIsTyping(false);
-      }
-    },
-    [messages]
-  );
-
-  /* chip-to-input auto-typing, then send */
-  const typeInto = useCallback(
-    (text: string) => {
-      if (typeTimer.current) window.clearTimeout(typeTimer.current);
-      setTypingIn(true);
-      setInput("");
-      let i = 0;
-      const tick = () => {
-        i++;
-        setInput(text.slice(0, i));
-        if (i < text.length) {
-          typeTimer.current = window.setTimeout(tick, 22);
-        } else {
-          setTypingIn(false);
-          typeTimer.current = window.setTimeout(() => void sendMessage(text), 280);
-        }
+      const aiMsg: ChatMessage = {
+        id: `msg-${Date.now() + 1}`,
+        role: "assistant",
+        content: data.answer || "I received empty response from the AI.",
+        timestamp: new Date(),
       };
-      typeTimer.current = window.setTimeout(tick, 120);
-    },
-    [sendMessage]
-  );
+
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch (err) {
+      console.error("Chat API Error:", err);
+      const errorMsg: ChatMessage = {
+        id: `msg-${Date.now() + 1}`,
+        role: "assistant",
+        content: `**Error:** Failed to connect to the Arad Agent backend. Make sure the FastAPI server is running on port 8000.\n\nDetails: ${err}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsTyping(false);
+    }
+  }, [messages]);
 
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [messages, isTyping]);
 
   useEffect(() => {
-    if (!pendingChatPrompt) return;
+    if (!pendingChatPrompt) {
+      return;
+    }
+
     const timer = window.setTimeout(() => {
-      typeInto(pendingChatPrompt);
+      void sendMessage(pendingChatPrompt);
       setPendingChatPrompt("");
     }, 0);
+
     return () => window.clearTimeout(timer);
-  }, [pendingChatPrompt, typeInto, setPendingChatPrompt]);
+  }, [pendingChatPrompt, sendMessage, setPendingChatPrompt]);
+
+  const handleSend = async () => {
+    await sendMessage(input);
+  };
+
+  const handleCopy = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      showToast("Message copied to clipboard.");
+    } catch {
+      showToast("Copy failed.");
+    }
+  };
+
+  const handleFeedback = (kind: "helpful" | "not helpful") => {
+    showToast(kind === "helpful" ? "Thanks for the feedback." : "Feedback recorded.");
+  };
+
+  const handleRegenerate = async () => {
+    const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+    if (!lastUserMessage) {
+      showToast("No user prompt to regenerate.");
+      return;
+    }
+
+    await sendMessage(lastUserMessage.content);
+  };
+
+  const handleSuggestion = (text: string) => {
+    setInput(text);
+  };
 
   return (
-    <div style={{ display: "flex", height: "100%", minHeight: 0, background: "var(--bg-root)" }}>
-      {/* System context sidebar */}
-      <div
-        className="hidden md:flex"
-        style={{
-          width: 280,
-          flex: "none",
-          borderRight: "1px solid var(--border-default)",
-          background: "var(--bg-surface)",
-          padding: 20,
-          flexDirection: "column",
-          gap: 16,
-          overflowY: "auto",
-        }}
-      >
-        <div className="section-label">System Context</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <ContextCard icon={<BarChart3 size={16} />} label="GR&R Studies" value={context.studies} />
-          <ContextCard icon={<TriangleAlert size={16} />} label="Open Alerts" value={context.violations} />
-          <ContextCard icon={<ClipboardCheck size={16} />} label="Pending Reviews" value={context.reviews} />
+    <motion.div
+      variants={container}
+      initial="hidden"
+      animate="show"
+      className="h-full flex flex-col"
+      style={{ background: "var(--bg-root)" }}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: "var(--border-subtle)" }}>
+        <div className="flex items-center gap-3">
+          <div
+            className="flex items-center justify-center w-9 h-9 rounded-xl"
+            style={{
+              background: "linear-gradient(135deg, var(--accent), var(--accent-dim))",
+              boxShadow: "0 0 20px rgba(99,145,255,0.2)",
+            }}
+          >
+            <Sparkles size={17} color="white" />
+          </div>
+          <div>
+            <h1 className="text-[15px] font-bold" style={{ color: "var(--text-primary)" }}>
+              AI Quality Copilot
+            </h1>
+            <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              Powered by Gemini · Full system context aware
+            </p>
+          </div>
         </div>
-        <div className="section-label" style={{ marginTop: 4 }}>Suggested</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {SUGGESTED.map((q) => (
-            <SuggestChip key={q} label={q} onClick={() => typeInto(q)} />
-          ))}
+        <div className="flex items-center gap-2">
+          <div className="live-dot" />
+          <span className="text-[11px] font-medium" style={{ color: "var(--success)" }}>Online</span>
         </div>
       </div>
 
-      {/* Conversation */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-        <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "28px 32px", display: "flex", flexDirection: "column", gap: 20 }}>
-          {messages.length === 0 && !isTyping && (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+      {/* Messages */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+        {/* Welcome state if no messages */}
+        {messages.length === 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col items-center justify-center h-full text-center"
+          >
+            <div
+              className="flex items-center justify-center w-16 h-16 rounded-2xl mb-5"
+              style={{
+                background: "var(--accent-bg)",
+                border: "1px solid rgba(99,145,255,0.15)",
+              }}
+            >
+              <Sparkles size={28} style={{ color: "var(--accent)" }} />
+            </div>
+            <h2 className="text-lg font-bold mb-2" style={{ color: "var(--text-primary)" }}>
+              Quality Intelligence Copilot
+            </h2>
+            <p className="text-[13px] max-w-md mb-6" style={{ color: "var(--text-muted)" }}>
+              Ask questions about GR&R studies, SPC violations, quality trends, or request analysis.
+              I have full context of your manufacturing quality data.
+            </p>
+          </motion.div>
+        )}
+
+        {/* Message list */}
+        <AnimatePresence>
+          {messages.map((msg) => (
+            <motion.div
+              key={msg.id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+              className={`flex gap-3 max-w-3xl ${msg.role === "user" ? "ml-auto flex-row-reverse" : ""}`}
+            >
+              {/* Avatar */}
               <div
+                className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 mt-1"
                 style={{
-                  width: 56,
-                  height: 56,
-                  borderRadius: "var(--radius-lg)",
-                  background: "var(--accent-ai-bg)",
-                  border: "1px solid rgba(99,102,241,.35)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  marginBottom: 18,
+                  background: msg.role === "assistant"
+                    ? "linear-gradient(135deg, var(--accent), var(--accent-dim))"
+                    : "var(--bg-elevated)",
+                  border: msg.role === "user" ? "1px solid var(--border-default)" : "none",
                 }}
               >
-                <Sparkles size={24} style={{ color: "var(--accent-ai)" }} />
+                {msg.role === "assistant" ? (
+                  <Sparkles size={14} color="white" />
+                ) : (
+                  <User size={14} style={{ color: "var(--text-muted)" }} />
+                )}
               </div>
-              <div style={{ fontFamily: "var(--font-sans)", fontSize: 18, fontWeight: 600, color: "var(--text-primary)" }}>AI Assistant</div>
-              <p style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--text-muted)", maxWidth: 380, marginTop: 8, lineHeight: 1.6 }}>
-                Ask about GR&R studies, SPC violations, quality trends, or request analysis. Answers are grounded in your live quality data.
-              </p>
-            </div>
-          )}
 
-          {messages.map((m) =>
-            m.role === "user" ? (
-              <UserMessage key={m.id} text={m.content} ts={m.timestamp} />
-            ) : (
-              <AIMessage key={m.id} content={m.content} ts={m.timestamp} />
-            )
-          )}
-          {isTyping && <AIMessage typing />}
-        </div>
-
-        {/* Composer */}
-        <div style={{ borderTop: "1px solid var(--border-default)", padding: "16px 32px 12px", background: "var(--bg-surface)" }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <div
-              style={{
-                flex: 1,
-                position: "relative",
-                borderRadius: "var(--radius-md)",
-                boxShadow: focus ? "var(--ring-focus)" : "0 0 0 0 transparent",
-                transition: "box-shadow .2s var(--ease-out)",
-              }}
-            >
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void sendMessage(input);
-                  }
-                }}
-                placeholder={typingIn ? "" : "Ask about quality data…"}
-                rows={1}
-                onFocus={() => setFocus(true)}
-                onBlur={() => setFocus(false)}
+              {/* Content */}
+              <div
+                className={`rounded-xl px-4 py-3.5 max-w-[600px] ${
+                  msg.role === "user" ? "ml-auto" : ""
+                }`}
                 style={{
-                  width: "100%",
-                  resize: "none",
-                  padding: "12px 14px",
-                  background: "var(--bg-primary)",
-                  border: `1px solid ${focus ? "var(--accent)" : "var(--border-default)"}`,
-                  borderRadius: "var(--radius-md)",
-                  color: "var(--text-primary)",
-                  fontFamily: "var(--font-sans)",
-                  fontSize: 13.5,
-                  outline: "none",
-                  maxHeight: 120,
-                  boxSizing: "border-box",
-                  transition: "border-color .2s",
+                  background: msg.role === "user" ? "var(--accent-bg-strong)" : "var(--bg-surface)",
+                  border: `1px solid ${
+                    msg.role === "user" ? "rgba(99,145,255,0.15)" : "var(--border-subtle)"
+                  }`,
                 }}
-                aria-label="Chat message"
-              />
-            </div>
-            <button
-              onClick={() => void sendMessage(input)}
-              disabled={!input.trim()}
-              style={{
-                width: 44,
-                height: 44,
-                flex: "none",
-                borderRadius: "var(--radius-md)",
-                border: "none",
-                cursor: input.trim() ? "pointer" : "default",
-                background: "linear-gradient(180deg,#3b82f6,#2563eb)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                opacity: input.trim() ? 1 : 0.7,
-                transition: "opacity .2s",
-              }}
-              aria-label="Send message"
+              >
+                <MarkdownText content={msg.content} />
+
+                {/* Widgets */}
+                {msg.widgets?.map((widget, i) => (
+                  <div key={i}>
+                    {widget.type === "metric" && <MetricWidget data={widget.data} />}
+                  </div>
+                ))}
+
+                {/* Actions for assistant messages */}
+                {msg.role === "assistant" && (
+                  <div className="flex items-center gap-1 mt-3 pt-3 border-t" style={{ borderColor: "var(--border-subtle)" }}>
+                    <button
+                      onClick={() => handleCopy(msg.content)}
+                      className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
+                      style={{ color: "var(--text-ghost)" }}
+                      title="Copy"
+                    >
+                      <Copy size={13} />
+                    </button>
+                    <button
+                      onClick={() => handleFeedback("helpful")}
+                      className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
+                      style={{ color: "var(--text-ghost)" }}
+                      title="Helpful"
+                    >
+                      <ThumbsUp size={13} />
+                    </button>
+                    <button
+                      onClick={() => handleFeedback("not helpful")}
+                      className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
+                      style={{ color: "var(--text-ghost)" }}
+                      title="Not helpful"
+                    >
+                      <ThumbsDown size={13} />
+                    </button>
+                    <button
+                      onClick={() => void handleRegenerate()}
+                      className="flex items-center justify-center w-7 h-7 rounded-md transition-colors"
+                      style={{ color: "var(--text-ghost)" }}
+                      title="Regenerate"
+                    >
+                      <RotateCcw size={13} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+
+        {/* Typing indicator */}
+        <AnimatePresence>
+          {isTyping && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="flex gap-3"
             >
-              <ArrowUp
-                size={18}
-                color="#fff"
-                style={{ transform: spin ? "rotate(360deg)" : "none", transition: spin ? "transform .45s var(--ease-out)" : "transform .15s var(--ease-out)" }}
-              />
-            </button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, justifyContent: "center" }}>
-            <Sparkles size={11} style={{ color: "var(--text-muted)" }} />
-            <span style={{ fontFamily: "var(--font-sans)", fontSize: 10, color: "var(--text-muted)" }}>
-              Powered by Gemini · responses may be inexact
+              <div
+                className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0"
+                style={{
+                  background: "linear-gradient(135deg, var(--accent), var(--accent-dim))",
+                }}
+              >
+                <Sparkles size={14} color="white" />
+              </div>
+              <div
+                className="rounded-xl px-4 py-3.5"
+                style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)" }}
+              >
+                <div className="typing-dots">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Suggestions */}
+      {messages.length <= 2 && (
+        <div className="px-6 pb-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Lightbulb size={12} style={{ color: "var(--text-ghost)" }} />
+            <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-ghost)" }}>
+              Suggested Questions
             </span>
           </div>
+          <div className="flex flex-wrap gap-2">
+            {suggestions.map((s, i) => (
+              <motion.button
+                key={i}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => handleSuggestion(s)}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-medium transition-colors"
+                style={{
+                  background: "var(--bg-surface)",
+                  color: "var(--text-secondary)",
+                  border: "1px solid var(--border-default)",
+                }}
+              >
+                {s}
+              </motion.button>
+            ))}
+          </div>
         </div>
+      )}
+
+      {/* Input */}
+      <div className="px-6 pb-5 pt-2 shrink-0">
+        <div
+          className="flex items-end gap-3 rounded-xl px-4 py-3 transition-all"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-default)",
+            boxShadow: "0 -4px 20px rgba(0,0,0,0.2)",
+          }}
+        >
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSend();
+              }
+            }}
+            placeholder="Ask about quality metrics, GR&R studies, SPC violations..."
+            rows={1}
+            className="flex-1 bg-transparent text-[13px] outline-none resize-none min-h-[24px] max-h-[120px]"
+            style={{ color: "var(--text-primary)" }}
+          />
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleSend}
+            disabled={!input.trim()}
+            className="flex items-center justify-center w-9 h-9 rounded-lg transition-all shrink-0"
+            style={{
+              background: input.trim() ? "var(--accent)" : "var(--bg-elevated)",
+              color: input.trim() ? "white" : "var(--text-ghost)",
+              cursor: input.trim() ? "pointer" : "default",
+            }}
+          >
+            <Send size={15} />
+          </motion.button>
+        </div>
+        <p className="text-center text-[10px] mt-2" style={{ color: "var(--text-ghost)" }}>
+          AI responses are based on live system data. Always verify critical decisions with raw measurements.
+        </p>
       </div>
-    </div>
+    </motion.div>
   );
 }

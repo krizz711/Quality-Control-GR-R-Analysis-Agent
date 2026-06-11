@@ -1,55 +1,52 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  Activity,
   AlertTriangle,
-  ArrowRight,
-  Check,
+  ArrowDownRight,
+  ArrowUpRight,
   CheckCircle2,
-  ChevronRight,
+  Clock3,
+  Database,
+  FileText,
   Loader2,
   RefreshCw,
-  Sparkles,
+  Radar,
+  ShieldAlert,
+  Activity,
+  TrendingUp,
 } from "lucide-react";
 import {
-  getAlertAccuracy,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
   getAlerts,
   getAuditLog,
   getDashboardSummary,
   getGRRHistory,
-  getSPCHistory,
   resolveAlert,
-  submitSPCData,
-  type AlertAccuracyResponse,
+  showToast,
   type AlertItem,
   type AlertListResponse,
   type AuditLogItem,
   type DashboardSummaryResponse,
   type GRRHistoryItem,
-  type SPCDataResponse,
 } from "@/api/apiClient";
 import { useRealtimeStream } from "@/api/realtime";
-import { useAppStore } from "@/lib/store";
-import { Card, DonutGauge, KPICard, Reveal, SPCChart, SectionTitle, StatusDot, type SPCChartPoint } from "@/components/ui/kit";
-
-const SPC_STORAGE_KEY = "arad-spc-active-process";
 
 type DashboardPayload = {
   summary: DashboardSummaryResponse;
   grrHistory: GRRHistoryItem[];
   alerts: AlertListResponse;
   auditLog: AuditLogItem[];
-  accuracy: AlertAccuracyResponse | null;
-};
-
-type FeedEvent = {
-  id: string;
-  t: string;
-  type: string;
-  tone: "fail" | "info" | "conditional" | "purple";
-  text: string;
-  fresh?: boolean;
 };
 
 const SEVERITY_ORDER: Record<AlertItem["severity"], number> = {
@@ -59,94 +56,113 @@ const SEVERITY_ORDER: Record<AlertItem["severity"], number> = {
   low: 1,
 };
 
-const toneColor: Record<FeedEvent["tone"], string> = {
-  fail: "var(--critical)",
-  info: "var(--accent)",
-  conditional: "var(--warning)",
-  purple: "var(--accent-ai)",
+const VERDICT_LABELS: Record<GRRHistoryItem["verdict"], string> = {
+  pass: "Excellent",
+  acceptable: "Acceptable",
+  fail: "Unacceptable",
 };
 
-const toneBadge: Record<FeedEvent["tone"], string> = {
-  fail: "badge badge-critical",
-  info: "badge badge-info",
-  conditional: "badge badge-warning",
-  purple: "badge badge-neutral",
+const VERDICT_STYLES: Record<GRRHistoryItem["verdict"], string> = {
+  pass: "bg-emerald-500/15 text-emerald-300 border-emerald-500/25",
+  acceptable: "bg-amber-500/15 text-amber-300 border-amber-500/25",
+  fail: "bg-rose-500/15 text-rose-300 border-rose-500/25",
 };
 
-function timeOf(value: string | Date) {
-  const date = typeof value === "string" ? new Date(value) : value;
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toTimeString().slice(0, 8);
+const VERDICT_DOT: Record<GRRHistoryItem["verdict"], string> = {
+  pass: "#34d399",
+  acceptable: "#fbbf24",
+  fail: "#f87171",
+};
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { staggerChildren: 0.07, delayChildren: 0.1 } },
+};
+const cardVariants = {
+  hidden: { opacity: 0, y: 12 },
+  show: { opacity: 1, y: 0, transition: { type: "spring" as const, stiffness: 380, damping: 28 } },
+};
+
+function formatTimestamp(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
-function eventToneFor(text: string): FeedEvent["tone"] {
-  const lower = text.toLowerCase();
-  if (lower.includes("violation") || lower.includes("spc")) return "fail";
-  if (lower.includes("alert")) return "conditional";
-  if (lower.includes("review")) return "purple";
-  return "info";
+function formatShortDate(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
 }
 
-function auditToFeed(entries: AuditLogItem[]): FeedEvent[] {
-  return entries.slice(0, 12).map((entry) => ({
-    id: `audit-${entry.id}`,
-    t: timeOf(entry.timestamp),
-    type: entry.action,
-    tone: eventToneFor(`${entry.action} ${entry.entity_type}`),
-    text: `${entry.entity_type} · ${entry.entity_id} — by ${entry.actor || "system"}`,
-  }));
+function formatRelativeTrend(current: number, previous: number) {
+  if (!previous) return { label: "New baseline", direction: "flat" as const };
+  const delta = ((current - previous) / previous) * 100;
+  if (Math.abs(delta) < 1) return { label: "Flat vs last week", direction: "flat" as const };
+  return {
+    label: `${delta > 0 ? "+" : ""}${delta.toFixed(0)}% vs last week`,
+    direction: delta > 0 ? ("up" as const) : ("down" as const),
+  };
 }
 
-function EventRow({ e }: { e: FeedEvent }) {
+function getPassRateTone(passRate: number) {
+  if (passRate > 70) return "text-emerald-300 border-emerald-500/25 bg-emerald-500/10";
+  if (passRate >= 40) return "text-amber-300 border-amber-500/25 bg-amber-500/10";
+  return "text-rose-300 border-rose-500/25 bg-rose-500/10";
+}
+
+function getSeverityTone(severity?: AlertItem["severity"]) {
+  switch (severity) {
+    case "critical": return "text-rose-300 bg-rose-500/10 border-rose-500/20";
+    case "high": return "text-orange-300 bg-orange-500/10 border-orange-500/20";
+    case "medium": return "text-amber-300 bg-amber-500/10 border-amber-500/20";
+    default: return "text-sky-300 bg-sky-500/10 border-sky-500/20";
+  }
+}
+
+function isWithinDays(timestamp: string, days: number, referenceTime: number) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return false;
+  return referenceTime - date.getTime() <= days * 24 * 60 * 60 * 1000;
+}
+
+function SkeletonBlock({ className = "" }: { className?: string }) {
+  return <div className={`shimmer-loading rounded-xl ${className}`} />;
+}
+
+function GrrTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: { date: string; value: number; verdict: string } }>;
+}) {
+  if (!active || !payload?.length) return null;
+  const pt = payload[0].payload;
   return (
-    <div
-      style={
-        {
-          position: "relative",
-          display: "flex",
-          gap: 10,
-          padding: "14px 20px",
-          borderBottom: "1px solid var(--border-default)",
-          "--flash-c": toneColor[e.tone],
-          animation: e.fresh ? "arad-event-in .35s var(--ease-out), arad-border-flash .6s ease-out" : "none",
-        } as React.CSSProperties
-      }
-    >
-      <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)", flex: "none", paddingTop: 2 }}>
-        {e.t}
-      </span>
-      <div style={{ minWidth: 0 }}>
-        <span className={toneBadge[e.tone]} style={{ marginBottom: 6 }}>{e.type}</span>
-        <div style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.45, marginTop: 6 }}>
-          {e.text}
-        </div>
-      </div>
+    <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] px-3 py-2 text-xs shadow-xl">
+      <div className="font-semibold text-[var(--text-primary)]">{pt.value.toFixed(2)}%</div>
+      <div className="mt-0.5 text-[var(--text-muted)]">{pt.date} · {pt.verdict}</div>
     </div>
   );
 }
 
 export default function DashboardPage() {
-  const { setActivePage } = useAppStore();
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
-  const [animKey, setAnimKey] = useState(0);
-  const [aiOpen, setAiOpen] = useState(true);
-  const [wsConnected, setWsConnected] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<FeedEvent[]>([]);
-
-  // Live SPC monitor state
-  const [spcProcess, setSpcProcess] = useState<string | null>(null);
-  const [spcPoints, setSpcPoints] = useState<SPCChartPoint[]>([]);
-  const [spcAnalysis, setSpcAnalysis] = useState<SPCDataResponse | null>(null);
-  const [drawKey, setDrawKey] = useState(0);
-
-  useEffect(() => {
-    setSpcProcess(window.localStorage.getItem(SPC_STORAGE_KEY));
-  }, []);
+  const [now, setNow] = useState(() => Date.now());
 
   const loadDashboard = useCallback(async () => {
     if (hasLoadedOnce) {
@@ -154,21 +170,18 @@ export default function DashboardPage() {
     } else {
       setLoading(true);
     }
-
     setError(null);
-
     try {
-      const [summary, grrHistory, alerts, auditLog, accuracy] = await Promise.all([
+      const [summary, grrHistory, alerts, auditLog] = await Promise.all([
         getDashboardSummary(),
         getGRRHistory(),
         getAlerts({ status: "active", limit: 50 }),
         getAuditLog(),
-        getAlertAccuracy().catch(() => null),
       ]);
-
-      setData({ summary, grrHistory, alerts, auditLog, accuracy });
+      setData({ summary, grrHistory, alerts, auditLog });
       setHasLoadedOnce(true);
-      setAnimKey((k) => k + 1);
+      setLastUpdated(new Date());
+      setNow(Date.now());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard data");
     } finally {
@@ -177,502 +190,553 @@ export default function DashboardPage() {
     }
   }, [hasLoadedOnce]);
 
-  const loadSpcMonitor = useCallback(async () => {
-    const processName = window.localStorage.getItem(SPC_STORAGE_KEY);
-    setSpcProcess(processName);
-    if (!processName) return;
-
-    try {
-      const history = await getSPCHistory(processName);
-      const values = [...history.points]
-        .reverse()
-        .map((point) => Number(point.value))
-        .filter(Number.isFinite)
-        .slice(-24);
-
-      if (values.length >= 2) {
-        const analysis = await submitSPCData({ process_name: processName, measurements: values });
-        setSpcAnalysis(analysis);
-        setSpcPoints(
-          values.map((v, index) => ({
-            v,
-            violation: analysis.violations.some((violation) => violation.index === index),
-          }))
-        );
-        setDrawKey((k) => k + 1);
-      } else {
-        setSpcAnalysis(null);
-        setSpcPoints([]);
-      }
-    } catch {
-      // SPC monitor stays in its empty state when history is unavailable.
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadDashboard();
-    void loadSpcMonitor();
-  }, [loadDashboard, loadSpcMonitor]);
+  useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
   useRealtimeStream({
-    onOpen: () => setWsConnected(true),
-    onClose: () => setWsConnected(false),
     onEvent: (event) => {
-      const eventType = String(event.type || "");
-      if (!eventType || eventType === "ping") return;
-
-      const text =
-        typeof event.message === "string"
-          ? event.message
-          : [event.process_name, event.part_number, event.characteristic_name].filter(Boolean).join(" · ") || eventType;
-
-      const id = `live-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      setLiveEvents((prev) => [
-        { id, t: timeOf(new Date()), type: eventType, tone: eventToneFor(eventType), text, fresh: true },
-        ...prev,
-      ].slice(0, 14));
-      window.setTimeout(() => {
-        setLiveEvents((prev) => prev.map((item) => (item.id === id ? { ...item, fresh: false } : item)));
-      }, 700);
-
-      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event"].includes(eventType)) {
+      const t = String(event.type || "");
+      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event"].includes(t)) {
         void loadDashboard();
-        void loadSpcMonitor();
       }
     },
   });
 
-  const handleResolveAlert = useCallback(
-    async (alertId: string) => {
-      setResolvingId(alertId);
-      try {
-        await resolveAlert(alertId);
-        await loadDashboard();
-      } finally {
-        setResolvingId(null);
-      }
-    },
-    [loadDashboard]
-  );
+  const handleResolveAlert = useCallback(async (alertId: string) => {
+    setResolvingId(alertId);
+    try {
+      await resolveAlert(alertId);
+      await loadDashboard();
+    } finally {
+      setResolvingId(null);
+    }
+  }, [loadDashboard]);
 
   const summary = data?.summary;
   const grrHistory = data?.grrHistory ?? [];
   const activeAlerts = [...(data?.alerts.items ?? [])].sort(
-    (left, right) => SEVERITY_ORDER[right.severity] - SEVERITY_ORDER[left.severity]
+    (a, b) => SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity]
   );
-  const accuracy = data?.accuracy ?? null;
+  const auditPreview = (data?.auditLog ?? []).slice(0, 5);
 
-  const feed = useMemo<FeedEvent[]>(() => {
-    const auditFeed = auditToFeed(data?.auditLog ?? []);
-    return [...liveEvents, ...auditFeed].slice(0, 14);
-  }, [liveEvents, data?.auditLog]);
+  const totalThisWeek = grrHistory.filter((item) => isWithinDays(item.timestamp, 7, now)).length;
+  const totalPrevWeek = grrHistory.filter((item) => {
+    const age = now - new Date(item.timestamp).getTime();
+    return age > 7 * 24 * 60 * 60 * 1000 && age <= 14 * 24 * 60 * 60 * 1000;
+  }).length;
+  const totalTrend = formatRelativeTrend(totalThisWeek, totalPrevWeek);
 
-  const grrSpark = useMemo(() => {
-    if (!grrHistory.length) return undefined;
-    const now = Date.now();
-    const day = 24 * 60 * 60 * 1000;
-    const counts: number[] = [];
-    for (let i = 6; i >= 0; i -= 1) {
-      const cutoff = now - i * day;
-      counts.push(grrHistory.filter((item) => new Date(item.timestamp).getTime() <= cutoff).length);
-    }
-    return counts;
-  }, [grrHistory]);
+  const processesMonitored = useMemo(() => {
+    const names = new Set<string>();
+    for (const alert of activeAlerts) { if (alert.process_name) names.add(alert.process_name); }
+    for (const entry of auditPreview) { if (entry.entity_type === "spc_process" && entry.entity_id) names.add(entry.entity_id); }
+    return names.size;
+  }, [activeAlerts, auditPreview]);
 
-  const studiesThisWeek = useMemo(() => {
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return grrHistory.filter((item) => new Date(item.timestamp).getTime() >= weekAgo).length;
-  }, [grrHistory]);
-
-  const criticalCount = activeAlerts.filter((a) => a.severity === "critical").length;
+  const highestSeverity = activeAlerts[0]?.severity;
   const passRate = summary?.passing_rate ?? 0;
-  const accuracyRate = accuracy?.accuracy_rate ?? null;
+  const passRateTone = getPassRateTone(passRate);
+  const showInitialLoading = loading && !data;
+  const hasInitialError = error && !data;
 
-  if (error && !data) {
+  const grrChartData = grrHistory
+    .filter((item) => item.grr_percent != null)
+    .slice(-20)
+    .map((item) => ({
+      date: formatShortDate(item.timestamp),
+      value: item.grr_percent!,
+      verdict: VERDICT_LABELS[item.verdict],
+      fill: VERDICT_DOT[item.verdict],
+    }));
+
+  if (hasInitialError) {
     return (
-      <div className="flex min-h-full items-center justify-center px-6 py-8" style={{ background: "var(--bg-root)" }}>
-        <Card padding={32} style={{ maxWidth: 440, textAlign: "center" }}>
-          <div
-            className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg"
-            style={{ background: "var(--critical-bg)", color: "var(--critical)" }}
-          >
-            <AlertTriangle size={22} />
+      <div className="min-h-full bg-[var(--bg-root)] px-6 py-8 text-[var(--text-primary)]">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mx-auto flex max-w-md items-center justify-center rounded-2xl border border-[var(--critical-bg)] bg-[var(--bg-surface)] p-8 shadow-2xl"
+        >
+          <div className="text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-rose-500/20 bg-rose-500/10 text-rose-300">
+              <AlertTriangle size={22} />
+            </div>
+            <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Dashboard unavailable</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{error}</p>
+            <button
+              onClick={() => void loadDashboard()}
+              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[var(--success)] px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:opacity-90"
+            >
+              <RefreshCw size={16} /> Retry
+            </button>
           </div>
-          <h1 className="page-title">Dashboard unavailable</h1>
-          <p className="mt-3 text-sm leading-6" style={{ color: "var(--text-muted)" }}>{error}</p>
-          <button onClick={() => void loadDashboard()} className="btn btn-primary mt-6">
-            <RefreshCw size={15} /> Retry
-          </button>
-        </Card>
+        </motion.div>
       </div>
     );
   }
 
   return (
-    <div className="arad-page min-h-full overflow-y-auto" style={{ background: "var(--bg-root)" }}>
-      <div className="mx-auto flex min-h-full max-w-[1400px] flex-col gap-4 px-6 py-6">
-        {/* Page header */}
-        <div className="flex items-start">
-          <div>
-            <h1 className="page-title">Dashboard</h1>
-            <div className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
-              Live GR&R, SPC, alerting, and audit visibility
-            </div>
-          </div>
-          <div className="flex-1" />
-          <button onClick={() => void loadDashboard()} className="btn btn-secondary" disabled={refreshing}>
-            {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Refresh
-          </button>
-        </div>
+    <div className="min-h-full bg-[var(--bg-root)] text-[var(--text-primary)]">
+      <div className="mx-auto flex min-h-full max-w-[1600px] flex-col gap-5 px-5 py-5 lg:px-8">
 
-        {error ? (
-          <div
-            className="flex items-center justify-between gap-3 rounded-md border px-4 py-3 text-sm"
-            style={{ background: "var(--warning-bg)", borderColor: "rgba(245,158,11,0.3)", color: "var(--warning-text)" }}
-          >
-            <span>{error}</span>
-            <button onClick={() => void loadDashboard()} className="btn btn-secondary">Retry</button>
-          </div>
-        ) : null}
-
-        {/* KPI strip */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <KPICard
-            id="k1"
-            label="GR&R Studies"
-            value={loading ? "—" : summary?.total_grr_analyses ?? 0}
-            subtitle={studiesThisWeek ? `+${studiesThisWeek} this week` : "No studies this week"}
-            subtitleTone={studiesThisWeek ? "success" : "muted"}
-            spark={grrSpark}
-            animateKey={animKey}
-            delay={0}
-          />
-          <KPICard
-            id="k2"
-            label="Alert Accuracy"
-            value={loading ? "—" : accuracyRate !== null ? accuracyRate.toFixed(1) : "—"}
-            unit={accuracyRate !== null ? "%" : ""}
-            subtitle={
-              accuracyRate === null
-                ? "Awaiting alert feedback"
-                : accuracy?.target_met
-                  ? "▲ vs 95% target"
-                  : "▼ below 95% target"
-            }
-            subtitleTone={accuracyRate === null ? "muted" : accuracy?.target_met ? "success" : "critical"}
-            animateKey={animKey}
-            delay={60}
-          />
-          <KPICard
-            id="k3"
-            label="Active Alerts"
-            value={loading ? "—" : summary?.active_alerts_count ?? 0}
-            subtitle={criticalCount ? `${criticalCount} critical · ${activeAlerts.length} total` : "No critical alerts"}
-            subtitleTone={criticalCount ? "critical" : "success"}
-            animateKey={animKey}
-            delay={120}
-          />
-          <KPICard
-            id="k4"
-            label="Pass Rate"
-            value={loading ? "—" : passRate.toFixed(1)}
-            unit="%"
-            subtitle={passRate > 70 ? "✓ healthy capability" : passRate >= 40 ? "review recommended" : "attention required"}
-            subtitleTone={passRate > 70 ? "success" : passRate >= 40 ? "warning" : "critical"}
-            animateKey={animKey}
-            delay={180}
-          />
-        </div>
-
-        {/* Monitor + events */}
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.5fr_1fr]">
-          <Reveal delay={120}>
-            <Card padding={20}>
-              <SectionTitle
-                right={
-                  <button onClick={() => setActivePage("spc")} className="btn btn-secondary !h-[30px] !px-3 text-[13px]">
-                    <Activity size={13} /> Open SPC Monitor
-                  </button>
-                }
-              >
-                Live Process Monitor{spcProcess ? ` · ${spcProcess}` : ""}
-              </SectionTitle>
-
-              {spcPoints.length >= 2 && spcAnalysis ? (
-                <>
-                  <SPCChart
-                    data={spcPoints}
-                    ucl={spcAnalysis.ucl}
-                    cl={(spcAnalysis.ucl + spcAnalysis.lcl) / 2}
-                    lcl={spcAnalysis.lcl}
-                    drawKey={drawKey}
-                  />
-                  <div className="mt-3.5 flex flex-wrap gap-2">
-                    {spcAnalysis.violations.length ? (
-                      <span className="badge badge-critical">
-                        {spcAnalysis.violations.length} violation{spcAnalysis.violations.length === 1 ? "" : "s"} detected
-                      </span>
-                    ) : (
-                      <span className="badge badge-success">
-                        <CheckCircle2 size={11} /> In control
-                      </span>
-                    )}
-                    <span className="badge badge-neutral">{spcPoints.length} measurements</span>
-                  </div>
-
-                  {spcAnalysis.ai_analysis ? (
-                    <div
-                      className="mt-4 rounded-r-md p-3.5"
-                      style={{ borderLeft: "3px solid var(--accent-ai)", background: "var(--bg-primary)" }}
-                    >
-                      <button
-                        onClick={() => setAiOpen((o) => !o)}
-                        className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent p-0"
-                      >
-                        <Sparkles size={15} style={{ color: "var(--accent-ai)" }} />
-                        <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>AI Interpretation</span>
-                        {spcAnalysis.violations.length > 0 && <span className="badge badge-critical">Urgent</span>}
-                        <div className="flex-1" />
-                        <ChevronRight
-                          size={16}
-                          style={{
-                            color: "var(--text-muted)",
-                            transform: aiOpen ? "rotate(90deg)" : "none",
-                            transition: "transform 150ms ease-out",
-                          }}
-                        />
-                      </button>
-                      <div style={{ display: "grid", gridTemplateRows: aiOpen ? "1fr" : "0fr", transition: "grid-template-rows .25s var(--ease-out)" }}>
-                        <div style={{ overflow: "hidden" }}>
-                          <p className="mt-2.5 whitespace-pre-line text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
-                            {spcAnalysis.ai_analysis}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </>
-              ) : (
-                <div
-                  className="flex min-h-[280px] flex-col items-center justify-center rounded-md border border-dashed text-center"
-                  style={{ borderColor: "var(--border-strong)", background: "var(--bg-primary)" }}
-                >
-                  <Activity size={22} style={{ color: "var(--text-ghost)" }} />
-                  <p className="mt-3 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                    {spcProcess ? "Waiting for measurements" : "No process registered"}
-                  </p>
-                  <p className="mt-1 max-w-sm text-sm" style={{ color: "var(--text-muted)" }}>
-                    {spcProcess
-                      ? `Submit at least two measurements for ${spcProcess} to render control limits.`
-                      : "Register a process on the SPC Monitor to start live control charting."}
-                  </p>
-                  <button onClick={() => setActivePage("spc")} className="btn btn-primary mt-4">
-                    {spcProcess ? "Submit Measurements" : "Add a Process"} <ArrowRight size={14} />
-                  </button>
-                </div>
-              )}
-            </Card>
-          </Reveal>
-
-          <Reveal delay={180}>
-            <Card padding={0} style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              <div className="flex items-center gap-2 border-b px-5 py-4" style={{ borderColor: "var(--border-default)" }}>
-                <h2 className="m-0 text-base font-semibold" style={{ color: "var(--text-primary)" }}>Live Events</h2>
-                <StatusDot tone={wsConnected ? "success" : "critical"} pulse={wsConnected} />
+        {/* Header */}
+        <motion.header
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-6 py-5 shadow-lg"
+        >
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="mt-0.5 flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--accent-bg-strong)] bg-[var(--accent-bg)] text-[var(--accent)]">
+                <Radar size={20} />
               </div>
-              <div style={{ flex: 1, overflowY: "auto", maxHeight: 432 }}>
-                {feed.length ? (
-                  feed.map((e) => <EventRow key={e.id} e={e} />)
-                ) : (
-                  <div className="px-5 py-10 text-center text-sm" style={{ color: "var(--text-ghost)" }}>
-                    Events appear here as quality workflows run.
-                  </div>
-                )}
-              </div>
-              <div
-                className="flex items-center gap-2 border-t px-5 py-3"
-                style={{ borderColor: "var(--border-default)", fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)" }}
-              >
-                <StatusDot tone={wsConnected ? "success" : "critical"} size={6} pulse={wsConnected} />
-                {wsConnected ? "WebSocket connected" : "WebSocket disconnected"}
-              </div>
-            </Card>
-          </Reveal>
-        </div>
-
-        {/* Bottom row */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Reveal delay={220}>
-            <Card padding={20} style={{ height: "100%" }}>
-              <SectionTitle
-                right={
-                  grrHistory.length ? (
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: "var(--accent)",
-                        background: "var(--accent-bg)",
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                      }}
-                    >
-                      {grrHistory.length}
-                    </span>
-                  ) : undefined
-                }
-              >
-                Recent GR&R Studies
-              </SectionTitle>
-              <div className="flex flex-col gap-2.5">
-                {grrHistory.slice(0, 3).map((item, i) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-2.5 pb-2.5"
-                    style={{ borderBottom: i < Math.min(grrHistory.length, 3) - 1 ? "1px solid var(--border-default)" : "none" }}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--text-primary)" }}>
-                        {item.grr_percent !== null ? `${item.grr_percent.toFixed(1)}%` : "—"} GR&R
-                      </div>
-                      <div className="mt-0.5 text-xs" style={{ color: "var(--text-muted)" }}>
-                        {item.operator_count} ops · {item.part_count} parts ·{" "}
-                        <span
-                          style={{
-                            fontFamily: "var(--font-mono)",
-                            color:
-                              item.verdict === "fail"
-                                ? "var(--critical)"
-                                : item.verdict === "acceptable"
-                                  ? "var(--warning)"
-                                  : "var(--success)",
-                          }}
-                        >
-                          {item.verdict === "pass" ? "acceptable" : item.verdict === "acceptable" ? "conditional" : "unacceptable"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {!grrHistory.length && (
-                  <div className="py-6 text-center text-sm" style={{ color: "var(--text-ghost)" }}>
-                    No studies yet.
-                  </div>
-                )}
-              </div>
-              <button
-                onClick={() => setActivePage("grr")}
-                className="mt-3 cursor-pointer border-none bg-transparent p-0 text-[13px]"
-                style={{ color: "var(--accent)" }}
-              >
-                {grrHistory.length ? `View all ${grrHistory.length} →` : "Run your first study →"}
-              </button>
-            </Card>
-          </Reveal>
-
-          <Reveal delay={260}>
-            <Card padding={20} style={{ height: "100%" }}>
-              <SectionTitle>Alert Accuracy</SectionTitle>
-              {accuracyRate !== null ? (
-                <div className="flex flex-col items-center gap-3">
-                  <DonutGauge value={accuracyRate} animateKey={animKey} />
-                  <div className="flex items-center gap-1.5">
-                    {accuracy?.target_met ? (
-                      <>
-                        <Check size={14} style={{ color: "var(--success)" }} />
-                        <span className="text-[13px] font-semibold" style={{ color: "var(--success)" }}>Target Met (95%)</span>
-                      </>
-                    ) : (
-                      <>
-                        <AlertTriangle size={14} style={{ color: "var(--warning)" }} />
-                        <span className="text-[13px] font-semibold" style={{ color: "var(--warning)" }}>Below 95% target</span>
-                      </>
-                    )}
-                  </div>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    {accuracy?.feedback_count ?? 0} feedback entries
+              <div>
+                <div className="flex items-center gap-3">
+                  <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">
+                    Quality Control AI Agent
+                  </h1>
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--success-bg)] bg-[var(--success-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--success)]">
+                    <span className="live-dot h-1.5 w-1.5" />
+                    Live
                   </span>
                 </div>
-              ) : (
-                <div className="flex min-h-[180px] flex-col items-center justify-center text-center">
-                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-                    No feedback recorded yet. Mark alerts Relevant or False Positive in the inbox to start tracking accuracy.
-                  </p>
-                  <button onClick={() => setActivePage("alerts")} className="btn btn-secondary mt-4">
-                    Open Alert Inbox
-                  </button>
-                </div>
-              )}
-            </Card>
-          </Reveal>
+                <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                  Industrial quality operations — GR&R, SPC, alerting, and audit visibility.
+                </p>
+              </div>
+            </div>
 
-          <Reveal delay={300}>
-            <Card padding={20} style={{ height: "100%" }}>
-              <SectionTitle
-                right={
-                  activeAlerts.length ? (
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: "var(--critical-text)",
-                        background: "var(--critical-fill)",
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                      }}
-                    >
-                      {activeAlerts.length}
-                    </span>
-                  ) : undefined
-                }
+            <div className="flex items-center gap-3">
+              {refreshing && (
+                <Loader2 size={14} className="animate-spin text-[var(--text-muted)]" />
+              )}
+              <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] px-4 py-3">
+                <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
+                  <Clock3 size={12} /> Last updated
+                </div>
+                <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                  {lastUpdated ? formatTimestamp(lastUpdated.toISOString()) : "Waiting…"}
+                </div>
+              </div>
+              <button
+                onClick={() => void loadDashboard()}
+                className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                title="Refresh"
               >
-                Active Alerts
-              </SectionTitle>
-              <div className="flex flex-col gap-2.5">
-                {activeAlerts.slice(0, 3).map((alert, i) => (
-                  <div
-                    key={alert.id}
-                    className="flex items-center gap-2.5 pb-2.5"
-                    style={{ borderBottom: i < Math.min(activeAlerts.length, 3) - 1 ? "1px solid var(--border-default)" : "none" }}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13px]" style={{ color: "var(--text-primary)" }}>{alert.message}</div>
-                      <div className="mt-0.5 text-xs" style={{ color: "var(--text-muted)" }}>
-                        <span style={{ color: alert.severity === "critical" ? "var(--critical)" : undefined }}>{alert.severity}</span>
-                        {" · "}{alert.process_name}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => void handleResolveAlert(alert.id)}
-                      disabled={resolvingId === alert.id}
-                      className="btn btn-success !h-[30px] !px-3 text-xs"
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          </div>
+
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mt-4 flex items-center justify-between gap-3 overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200"
+              >
+                <span>{error}</span>
+                <button
+                  onClick={() => void loadDashboard()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-100 transition hover:bg-amber-400/20"
+                >
+                  <RefreshCw size={12} /> Retry
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.header>
+
+        {/* Stat cards */}
+        <motion.section
+          className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"
+          variants={containerVariants}
+          initial="hidden"
+          animate="show"
+        >
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Total GR&R Analyses"
+              value={summary?.total_grr_analyses ?? 0}
+              icon={<Database size={17} />}
+              tone="text-[var(--text-primary)]"
+              accent="border-[var(--accent-bg-strong)] bg-[var(--accent-bg)] text-[var(--accent)]"
+              detail={totalTrend.label}
+              trend={totalTrend.direction}
+              loading={showInitialLoading}
+            />
+          </motion.div>
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Current Pass Rate"
+              value={`${passRate.toFixed(1)}%`}
+              icon={<CheckCircle2 size={17} />}
+              tone={passRateTone.split(" ")[0]}
+              accent={passRateTone}
+              detail={passRate > 70 ? "Healthy process capability" : passRate >= 40 ? "Review recommended" : "Immediate attention required"}
+              loading={showInitialLoading}
+            />
+          </motion.div>
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Active Alerts"
+              value={summary?.active_alerts_count ?? 0}
+              icon={<AlertTriangle size={17} />}
+              tone="text-[var(--text-primary)]"
+              accent={getSeverityTone(highestSeverity)}
+              detail={highestSeverity ? `Highest severity: ${highestSeverity}` : "No active incidents"}
+              loading={showInitialLoading}
+            />
+          </motion.div>
+          <motion.div variants={cardVariants}>
+            <StatCard
+              title="Processes Monitored"
+              value={processesMonitored}
+              icon={<Activity size={17} />}
+              tone="text-[var(--text-primary)]"
+              accent="border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]"
+              detail="Tracked via alerts and audit trail"
+              loading={showInitialLoading}
+            />
+          </motion.div>
+        </motion.section>
+
+        {/* Main panels */}
+        <section className="grid gap-5 xl:grid-cols-2">
+          <Panel title="Recent GR&R Results" icon={<Database size={15} />}>
+            {showInitialLoading ? (
+              <TableSkeleton rows={8} />
+            ) : (
+              <div className="overflow-hidden rounded-xl border border-[var(--border-default)]">
+                <table className="min-w-full divide-y divide-[var(--border-subtle)] text-left text-sm">
+                  <thead className="bg-[var(--bg-elevated)] text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Timestamp</th>
+                      <th className="px-4 py-3 font-medium">GR&R %</th>
+                      <th className="px-4 py-3 font-medium">Verdict</th>
+                      <th className="px-4 py-3 font-medium">Operators</th>
+                      <th className="px-4 py-3 font-medium">Parts</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-subtle)] bg-[var(--bg-root)]/40">
+                    {grrHistory.slice(0, 10).map((item) => (
+                      <tr key={item.id} className="transition hover:bg-[var(--bg-hover)]">
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{formatTimestamp(item.timestamp)}</td>
+                        <td className="px-4 py-3 font-semibold tabular-nums text-[var(--text-primary)]">
+                          {item.grr_percent?.toFixed(1) ?? "—"}%
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`badge ${
+                            item.verdict === "pass" ? "badge-success" : item.verdict === "acceptable" ? "badge-warning" : "badge-critical"
+                          }`}>
+                            {VERDICT_LABELS[item.verdict]}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-[var(--text-secondary)]">{item.operator_count}</td>
+                        <td className="px-4 py-3 text-[var(--text-secondary)]">{item.part_count}</td>
+                      </tr>
+                    ))}
+                    {!grrHistory.length && (
+                      <tr>
+                        <td className="px-4 py-8 text-center text-[var(--text-muted)]" colSpan={5}>
+                          No GR&R analyses available.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Active Alerts" icon={<ShieldAlert size={15} />}>
+            {showInitialLoading ? (
+              <ListSkeleton rows={5} />
+            ) : activeAlerts.length ? (
+              <div className="space-y-2.5">
+                <AnimatePresence initial={false}>
+                  {activeAlerts.map((alert) => (
+                    <motion.div
+                      key={alert.id}
+                      initial={{ opacity: 0, x: 8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -8 }}
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                      className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)]"
                     >
-                      {resolvingId === alert.id ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Resolve
-                    </button>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`badge ${getSeverityTone(alert.severity).includes("rose") ? "badge-critical" : getSeverityTone(alert.severity).includes("amber") ? "badge-warning" : "badge-info"}`}>
+                              {alert.severity}
+                            </span>
+                            {alert.process_name && (
+                              <span className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
+                                {alert.process_name}
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-2 text-sm leading-relaxed text-[var(--text-primary)]">{alert.message}</p>
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">{formatTimestamp(alert.created_at)}</p>
+                        </div>
+                        <button
+                          onClick={() => void handleResolveAlert(alert.id)}
+                          disabled={resolvingId === alert.id}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--success-bg)] bg-[var(--success-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--success)] transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {resolvingId === alert.id
+                            ? <Loader2 size={12} className="animate-spin" />
+                            : <CheckCircle2 size={12} />}
+                          Resolve
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            ) : (
+              <EmptyState
+                icon={<CheckCircle2 size={18} />}
+                title="No active alerts"
+                description="All monitored processes are within control limits."
+              />
+            )}
+          </Panel>
+        </section>
+
+        {/* Charts row */}
+        <section className="grid gap-5 xl:grid-cols-2">
+          <Panel title="GR&R Trend (Last 20 Runs)" icon={<TrendingUp size={15} />}>
+            {showInitialLoading ? (
+              <SkeletonBlock className="h-[280px]" />
+            ) : grrChartData.length > 1 ? (
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={grrChartData} margin={{ top: 8, right: 16, left: -8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: "var(--text-muted)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fill: "var(--text-muted)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      unit="%"
+                      domain={[0, "auto"]}
+                    />
+                    <Tooltip content={<GrrTooltip />} />
+                    <ReferenceLine
+                      y={30}
+                      stroke="var(--critical)"
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.5}
+                      label={{ value: "30% limit", fill: "var(--critical)", fontSize: 9, position: "right" }}
+                    />
+                    <ReferenceLine
+                      y={10}
+                      stroke="var(--success)"
+                      strokeDasharray="4 4"
+                      strokeOpacity={0.5}
+                      label={{ value: "10% target", fill: "var(--success)", fontSize: 9, position: "right" }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke="var(--accent)"
+                      strokeWidth={2}
+                      dot={({ cx, cy, payload }) => (
+                        <circle
+                          key={`dot-${cx}-${cy}`}
+                          cx={cx}
+                          cy={cy}
+                          r={4}
+                          fill={(payload as { fill: string }).fill}
+                          stroke="var(--bg-root)"
+                          strokeWidth={1.5}
+                        />
+                      )}
+                      activeDot={{ r: 5, fill: "var(--accent-bright)", stroke: "var(--bg-root)", strokeWidth: 2 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <EmptyState
+                icon={<TrendingUp size={18} />}
+                title="No trend data yet"
+                description="GR&R history will appear here after analyses are recorded."
+              />
+            )}
+          </Panel>
+
+          <Panel title="Audit Log" icon={<FileText size={15} />}>
+            {showInitialLoading ? (
+              <ListSkeleton rows={5} />
+            ) : auditPreview.length ? (
+              <div className="space-y-2.5">
+                {auditPreview.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-3.5"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-[var(--text-primary)]">{entry.action}</p>
+                        <p className="mt-0.5 text-[10px] uppercase tracking-widest text-[var(--text-muted)]">
+                          {entry.entity_type} · {entry.entity_id}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-xs text-[var(--text-muted)]">{formatTimestamp(entry.timestamp)}</span>
+                    </div>
+                    <p className="mt-1.5 text-xs text-[var(--text-secondary)]">Actor: {entry.actor}</p>
                   </div>
                 ))}
-                {!activeAlerts.length && (
-                  <div className="py-6 text-center text-sm" style={{ color: "var(--text-ghost)" }}>
-                    <CheckCircle2 size={18} className="mx-auto mb-2" style={{ color: "var(--success)" }} />
-                    All processes within control limits.
-                  </div>
-                )}
               </div>
-              {activeAlerts.length > 0 && (
-                <button
-                  onClick={() => setActivePage("alerts")}
-                  className="mt-3 cursor-pointer border-none bg-transparent p-0 text-[13px]"
-                  style={{ color: "var(--accent)" }}
-                >
-                  View all {activeAlerts.length} →
-                </button>
-              )}
-            </Card>
-          </Reveal>
-        </div>
+            ) : (
+              <EmptyState
+                icon={<FileText size={18} />}
+                title="No audit entries"
+                description="Audit logs appear here after quality workflows run."
+              />
+            )}
+          </Panel>
+        </section>
       </div>
+    </div>
+  );
+}
+
+function Panel({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 300, damping: 28, delay: 0.15 }}
+      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5"
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
+          {icon}
+        </div>
+        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text-secondary)]">{title}</h2>
+      </div>
+      {children}
+    </motion.div>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  icon,
+  accent,
+  tone,
+  detail,
+  trend,
+  loading,
+}: {
+  title: string;
+  value: number | string;
+  icon: React.ReactNode;
+  accent: string;
+  tone: string;
+  detail: string;
+  trend?: "up" | "down" | "flat";
+  loading: boolean;
+}) {
+  return (
+    <motion.div
+      whileHover={{ y: -2, transition: { type: "spring", stiffness: 400, damping: 20 } }}
+      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5 transition-shadow hover:shadow-lg"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">{title}</p>
+          {loading ? (
+            <SkeletonBlock className="mt-3 h-9 w-28" />
+          ) : (
+            <div className={`mt-3 text-3xl font-semibold tracking-tight tabular-nums ${tone}`}>{value}</div>
+          )}
+        </div>
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${accent}`}>{icon}</div>
+      </div>
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <span className="text-xs text-[var(--text-muted)]">{detail}</span>
+        {trend === "up" && (
+          <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--success)]">
+            <ArrowUpRight size={12} /> Up
+          </span>
+        )}
+        {trend === "down" && (
+          <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--critical)]">
+            <ArrowDownRight size={12} /> Down
+          </span>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+function EmptyState({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+  return (
+    <div className="flex min-h-[200px] flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border-default)] bg-[var(--bg-root)]/40 px-6 py-8 text-center">
+      <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-muted)]">
+        {icon}
+      </div>
+      <h3 className="mt-3 text-sm font-semibold text-[var(--text-primary)]">{title}</h3>
+      <p className="mt-1 max-w-xs text-xs leading-relaxed text-[var(--text-muted)]">{description}</p>
+    </div>
+  );
+}
+
+function TableSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--border-default)]">
+      <div className="grid grid-cols-5 gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
+        {Array.from({ length: 5 }).map((_, i) => <SkeletonBlock key={i} className="h-3" />)}
+      </div>
+      <div className="divide-y divide-[var(--border-subtle)] bg-[var(--bg-root)]/40">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="grid grid-cols-5 gap-4 px-4 py-3.5">
+            <SkeletonBlock className="h-4 w-24" />
+            <SkeletonBlock className="h-4 w-14" />
+            <SkeletonBlock className="h-5 w-20 rounded-full" />
+            <SkeletonBlock className="h-4 w-10" />
+            <SkeletonBlock className="h-4 w-10" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ListSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="space-y-2.5">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 space-y-2.5">
+              <SkeletonBlock className="h-4 w-32" />
+              <SkeletonBlock className="h-3.5 w-full" />
+              <SkeletonBlock className="h-3 w-20" />
+            </div>
+            <SkeletonBlock className="h-8 w-20 rounded-lg" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

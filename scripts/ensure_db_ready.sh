@@ -15,5 +15,5 @@ done
 
 echo "TimescaleDB is ready. Running Alembic migrations..."
 # Use the repository's alembic.ini by default
-alembic -c /app/alembic.ini upgrade head
+alembic -c /app/alembic.ini upgrade heads
 echo "Migrations complete."

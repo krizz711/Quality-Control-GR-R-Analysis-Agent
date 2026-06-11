@@ -2,7 +2,7 @@ services:
   timescaledb:
     image: timescale/timescaledb:2.27.1-pg15
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-arad_quality}
       POSTGRES_USER: ${POSTGRES_USER:-arad}
@@ -121,12 +121,32 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
+      POSTGRES_DB: ${POSTGRES_DB:-arad_quality}
+      POSTGRES_USER: ${POSTGRES_USER:-arad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arad_pass}
+      DB_HOST: timescaledb
+      DB_PORT: "5432"
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-arad-quality-agent-test-consumer}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      DASHBOARD_URL: ${DASHBOARD_URL:-http://localhost:3000}
+      ML_TOOL_NAME: ${ML_TOOL_NAME:-mlflow}
+      QMS_API_URL: ${QMS_API_URL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      ALERT_EMAIL_RECIPIENTS: ${ALERT_EMAIL_RECIPIENTS:-}
+      SMS_WEBHOOK_URL: ${SMS_WEBHOOK_URL:-}
+      SMS_AUTH_TOKEN: ${SMS_AUTH_TOKEN:-}
+      SMS_FROM_NUMBER: ${SMS_FROM_NUMBER:-}
+      SMS_TO_NUMBERS: ${SMS_TO_NUMBERS:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       JIRA_URL: ${JIRA_URL:-}
       JIRA_EMAIL: ${JIRA_EMAIL:-}
       JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
@@ -134,6 +154,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       API_AUTH_KEY: ${API_AUTH_KEY}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       ALLOW_MOCK_DATA: "false"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
@@ -151,7 +172,7 @@ services:
           memory: 256M
     networks:
       - arad-network
-    command: ["sh", "-c", "./scripts/ensure_db_ready.sh && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "/app/scripts/docker_api_entrypoint.sh"]
 
   consumer:
     image: arad-quality-agent-api:0.1.0
@@ -164,9 +185,18 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
-    command: ["python", "-m", "agent.consumer"]
+    command:
+      [
+        "sh",
+        "-c",
+        "export DATABASE_URL=$$(python /app/scripts/build_database_url.py) && python -m agent.consumer",
+      ]
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-arad}:${POSTGRES_PASSWORD:-arad_pass}@timescaledb:5432/${POSTGRES_DB:-arad_quality}
+      POSTGRES_DB: ${POSTGRES_DB:-arad_quality}
+      POSTGRES_USER: ${POSTGRES_USER:-arad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arad_pass}
+      DB_HOST: timescaledb
+      DB_PORT: "5432"
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -214,12 +244,18 @@ services:
     image: arad-quality-agent-mlflow:2.18.0
     ports:
       - "5000:5000"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-arad_quality}
+      POSTGRES_USER: ${POSTGRES_USER:-arad}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arad_pass}
+      DB_HOST: timescaledb
+      DB_PORT: "5432"
     command: >
-      mlflow server
+      sh -c "mlflow server
       --host 0.0.0.0
       --port 5000
-      --backend-store-uri postgresql://arad:arad_pass@timescaledb:5432/arad_quality
-      --default-artifact-root /mlflow/artifacts
+      --backend-store-uri $$(python /scripts/build_database_url.py --sync)
+      --default-artifact-root /mlflow/artifacts"
     volumes:
       - ./mlflow-artifacts:/mlflow/artifacts
     healthcheck:

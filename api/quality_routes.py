@@ -33,9 +33,22 @@ class AlertResolveResponse(BaseModel):
     resolved_at: datetime
     
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 logger = logging.getLogger(__name__)
+
+_AI_UNAVAILABLE = "AI analysis unavailable — set GEMINI_API_KEY to enable Gemini narrative."
+
+
+async def _optional_gemini(coro):
+    """Run a Gemini coroutine; return a fallback message when the API key is absent."""
+    try:
+        return await coro
+    except ValueError as exc:
+        if "GEMINI_API_KEY" in str(exc):
+            return _AI_UNAVAILABLE
+        raise
+
 
 router = APIRouter(prefix="/api/v1", tags=["quality-api"])
 
@@ -323,10 +336,6 @@ class MESMeasurementResponse(BaseModel):
     message: str
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def _verdict_from_grr(grr_percent: float | None) -> Literal["pass", "acceptable", "fail"]:
     if grr_percent is None:
         return "fail"
@@ -529,16 +538,18 @@ async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
             result = grr_anova(df, tolerance=body.part_tolerance)
 
         verdict = evaluate(result)
-        ai_analysis = await geminiService.analyzeGRR(
-            {
-                "measurements": [item.model_dump() for item in body.measurements],
-                "part_tolerance": body.part_tolerance,
-                "grr_percent": result.total_grr,
-                "repeatability": result.repeatability,
-                "reproducibility": result.reproducibility,
-                "number_of_distinct_categories": result.ndc,
-                "verdict": verdict.level.value,
-            }
+        ai_analysis = await _optional_gemini(
+            geminiService.analyzeGRR(
+                {
+                    "measurements": [item.model_dump() for item in body.measurements],
+                    "part_tolerance": body.part_tolerance,
+                    "grr_percent": result.total_grr,
+                    "repeatability": result.repeatability,
+                    "reproducibility": result.reproducibility,
+                    "number_of_distinct_categories": result.ndc,
+                    "verdict": verdict.level.value,
+                }
+            )
         )
 
         study_id = uuid.uuid4()
@@ -694,17 +705,19 @@ async def _analyze_spc_data_impl(body: SPCDataRequest) -> SPCDataResponse:
             lcl = center_line - 3 * sigma
 
         violations = _detect_western_electric_rules(values, center_line, sigma)
-        ai_analysis = await geminiService.analyzeSPCAnomaly(
-            {
-                "process_name": body.process_name,
-                "measurements": values,
-                "mean": mean_value,
-                "std_dev": std_dev,
-                "ucl": ucl,
-                "lcl": lcl,
-                "target": body.target,
-                "violations": [violation.model_dump() for violation in violations],
-            }
+        ai_analysis = await _optional_gemini(
+            geminiService.analyzeSPCAnomaly(
+                {
+                    "process_name": body.process_name,
+                    "measurements": values,
+                    "mean": mean_value,
+                    "std_dev": std_dev,
+                    "ucl": ucl,
+                    "lcl": lcl,
+                    "target": body.target,
+                    "violations": [violation.model_dump() for violation in violations],
+                }
+            )
         )
 
         timestamp = _now()
@@ -1043,6 +1056,11 @@ async def trigger_alert(body: AlertTriggerRequest) -> AlertTriggerResponse:
         )
         await session.commit()
 
+    if alert_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Alert could not be created (deduplication or dispatch failure)",
+        )
     return AlertTriggerResponse(alert_id=str(alert_id), created_at=timestamp)
 
 

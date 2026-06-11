@@ -17,10 +17,25 @@ The app now has a production-oriented compose stack with:
 
 Before a real production deployment, rotate every secret in `.env`, set `ENVIRONMENT=production`, and use a managed secret store or deployment platform secrets.
 
+## Project layout
+
+This repository has **one canonical root**. All commands (`docker compose`, `make`, `pytest`) run from here.
+
+| Path | Role |
+| --- | --- |
+| `api/`, `agent/`, `grr/`, `spc/` | Backend application code |
+| `dashboard/` | Next.js UI |
+| `docker-compose.yml` | Full stack orchestration |
+| `.env` | **Your secrets** (gitignored, root only) |
+| `arad-quality-agent/` | **Legacy nested clone — do not use.** Gitignored. See [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md). |
+
 ## Quick Start
 
 ```bash
 cp .env.example .env
+# If migrating from arad-quality-agent/.env:
+# python scripts/bootstrap_env.py
+
 docker compose up --build
 ```
 
