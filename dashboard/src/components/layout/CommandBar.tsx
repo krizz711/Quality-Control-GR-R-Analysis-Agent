@@ -1,16 +1,74 @@
 "use client";
 
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Search, Sparkles, Bell, Shield, Command, Zap, Network } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Search, Sparkles, Bell, Network, ChevronRight, TriangleAlert } from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import { getDashboardSummary } from "@/api/apiClient";
+import { useBackendHealth } from "@/lib/useBackendHealth";
+import { useRealtimeStream } from "@/api/realtime";
 import IntegrationsModal from "./IntegrationsModal";
 
+const PAGE_LABELS: Record<string, string> = {
+  dashboard: "Dashboard",
+  grr: "GR&R Studies",
+  review: "Review Queue",
+  spc: "SPC Monitor",
+  alerts: "Alerts",
+  audit: "Audit Log",
+  chat: "AI Assistant",
+};
+
 export default function CommandBar() {
-  const { notificationCount, setActivePage, setChatOpen, setPendingChatPrompt } = useAppStore();
+  const { activePage, notificationCount, setNotificationCount, setActivePage, setChatOpen, setPendingChatPrompt, setCommandPaletteOpen } = useAppStore();
   const [focused, setFocused] = useState(false);
   const [query, setQuery] = useState("");
   const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const health = useBackendHealth();
+
+  // Keep the alert badge honest: sync with the backend count.
+  useEffect(() => {
+    let cancelled = false;
+
+    const sync = async () => {
+      try {
+        const summary = await getDashboardSummary();
+        if (!cancelled) {
+          setNotificationCount(summary.active_alerts_count);
+        }
+      } catch {
+        // Backend offline — leave the badge at its last known value.
+      }
+    };
+
+    void sync();
+    return () => {
+      cancelled = true;
+    };
+  }, [setNotificationCount]);
+
+  useRealtimeStream({
+    onEvent: (event) => {
+      if (String(event.type || "") === "alert.created") {
+        void getDashboardSummary()
+          .then((summary) => setNotificationCount(summary.active_alerts_count))
+          .catch(() => undefined);
+      }
+    },
+  });
+
+  // Ctrl/Cmd+K opens the command palette (prototype behavior).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [setCommandPaletteOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,153 +79,119 @@ export default function CommandBar() {
       setActivePage("chat");
       setChatOpen(true);
       setQuery("");
+      inputRef.current?.blur();
     }
   };
 
   return (
     <>
       <header
-        className="flex items-center h-14 px-4 border-b shrink-0 z-10"
+        className="z-10 flex h-16 shrink-0 items-center gap-4 border-b px-6"
         style={{
-          background: "var(--bg-primary)",
-          borderColor: "var(--border-subtle)",
+          background: "rgba(10, 11, 15, 0.7)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+          borderColor: "var(--border-default)",
         }}
       >
-        <form onSubmit={handleSubmit} className="flex-1 max-w-2xl">
-          <motion.div
-            className="relative flex items-center"
-            animate={{
-              boxShadow: focused
-                ? "0 0 0 2px rgba(99,145,255,0.15), 0 0 20px rgba(99,145,255,0.06)"
-                : "none",
-            }}
+        {/* Breadcrumb */}
+        <div className="flex items-center gap-2 text-sm">
+          <span style={{ color: "var(--text-muted)" }}>Arad</span>
+          <ChevronRight size={14} style={{ color: "var(--text-muted)" }} />
+          <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
+            {PAGE_LABELS[activePage] || "Dashboard"}
+          </span>
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Ask AI */}
+        <form onSubmit={handleSubmit} className="w-[280px]">
+          <div
+            className="relative flex h-9 items-center transition-shadow"
             style={{
-              background: focused ? "var(--bg-surface)" : "var(--bg-primary)",
-              border: `1px solid ${focused ? "rgba(99,145,255,0.3)" : "var(--border-default)"}`,
+              background: "var(--bg-primary)",
+              border: `1px solid ${focused ? "var(--accent)" : "var(--border-default)"}`,
               borderRadius: "var(--radius-md)",
+              boxShadow: focused ? "var(--ring-focus)" : "none",
             }}
           >
             {focused ? (
               <Sparkles size={15} className="ml-3 shrink-0" style={{ color: "var(--accent)" }} />
             ) : (
-              <Search size={15} className="ml-3 shrink-0" style={{ color: "var(--text-ghost)" }} />
+              <Search size={15} className="ml-3 shrink-0" style={{ color: "var(--text-muted)" }} />
             )}
             <input
+              ref={inputRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              placeholder={focused ? "Ask the AI copilot anything..." : "Search or ask AI..."}
-              className="flex-1 bg-transparent px-3 py-2 text-sm outline-none"
+              placeholder="Ask AI..."
+              className="min-w-0 flex-1 bg-transparent px-3 text-sm outline-none"
               style={{ color: "var(--text-primary)" }}
+              aria-label="Ask the AI copilot"
             />
-            <div className="flex items-center gap-1 mr-2">
-              <kbd
-                className="hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                style={{
-                  background: "var(--bg-elevated)",
-                  color: "var(--text-ghost)",
-                  border: "1px solid var(--border-subtle)",
-                }}
-              >
-                <Command size={10} />K
-              </kbd>
-            </div>
-          </motion.div>
+            <kbd className="kbd mr-2 hidden sm:inline-flex">⌘K</kbd>
+          </div>
         </form>
 
-        <div className="flex items-center gap-1 ml-4">
-          <div
-            className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg mr-2"
-            style={{
-              background: "rgba(52, 211, 153, 0.06)",
-              border: "1px solid rgba(52, 211, 153, 0.1)",
-            }}
-          >
-            <div className="live-dot" style={{ width: 6, height: 6 }} />
-            <span className="text-[11px] font-medium" style={{ color: "var(--success)" }}>
-              Live
-            </span>
-            <Zap size={11} style={{ color: "var(--success)" }} />
-          </div>
+        {/* Connection state */}
+        {health === "online" ? (
+          <span className="hidden items-center gap-2 md:inline-flex">
+            <span className="live-dot" />
+            <span className="text-xs font-semibold" style={{ color: "var(--success-text)" }}>Live</span>
+          </span>
+        ) : health === "offline" ? (
+          <span className="hidden items-center gap-1.5 md:inline-flex">
+            <TriangleAlert size={14} style={{ color: "var(--critical)" }} />
+            <span className="text-xs font-semibold" style={{ color: "var(--critical-text)" }}>Offline</span>
+          </span>
+        ) : (
+          <span className="hidden items-center gap-2 md:inline-flex">
+            <span className="status-dot status-dot-warning" />
+            <span className="text-xs font-semibold" style={{ color: "var(--warning-text)" }}>Connecting…</span>
+          </span>
+        )}
 
-          <button
-            onClick={() => setIsIntegrationsOpen(true)}
-            className="flex items-center justify-center gap-2 px-3 h-9 rounded-lg transition-colors border"
-            style={{
-              color: "var(--text-primary)",
-              background: "var(--bg-elevated)",
-              borderColor: "var(--border-subtle)",
-            }}
-            title="System Integrations & Architecture"
-          >
-            <Network size={14} style={{ color: "var(--accent)" }} />
-            <span className="text-xs font-medium">Integrations</span>
-          </button>
+        <button
+          onClick={() => setIsIntegrationsOpen(true)}
+          className="btn btn-secondary cursor-pointer"
+          title="System integrations and architecture"
+        >
+          <Network size={14} style={{ color: "var(--accent)" }} />
+          <span className="hidden lg:inline">Integrations</span>
+        </button>
 
-          <button
-            onClick={() => setActivePage("dashboard")}
-            className="flex items-center justify-center w-9 h-9 rounded-lg transition-colors ml-1"
-            style={{ color: "var(--text-muted)" }}
-            title="API Security"
-          >
-            <Shield size={17} />
-          </button>
-
-          <button
-            onClick={() => {
-              if (notificationCount > 0) {
-                setPendingChatPrompt(`Show my ${notificationCount} newest notifications.`);
-                setActivePage("chat");
-                setChatOpen(true);
-              }
-            }}
-            className="relative flex items-center justify-center w-9 h-9 rounded-lg transition-colors"
-            style={{ color: "var(--text-muted)" }}
-            title="Notifications"
-          >
-            <Bell size={17} />
-            {notificationCount > 0 && (
-              <motion.span
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[16px] h-4 rounded-full text-[9px] font-bold px-1"
-                style={{
-                  background: "var(--critical)",
-                  color: "white",
-                  boxShadow: "0 0 8px rgba(248,113,113,0.4)",
-                }}
-              >
-                {notificationCount}
-              </motion.span>
-            )}
-          </button>
-
-          <div
-            className="flex items-center gap-2 ml-2 pl-3 border-l"
-            style={{ borderColor: "var(--border-subtle)" }}
-          >
-            <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold"
+        <button
+          onClick={() => setActivePage("alerts")}
+          className="btn-icon relative cursor-pointer"
+          title={notificationCount > 0 ? `${notificationCount} active alerts` : "Alert inbox"}
+          aria-label="Open alert inbox"
+        >
+          <Bell size={17} />
+          {notificationCount > 0 && (
+            <span
+              className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[11px] font-bold"
               style={{
-                background: "linear-gradient(135deg, var(--accent-dim), var(--accent))",
-                color: "white",
+                fontFamily: "var(--font-mono)",
+                background: "var(--critical)",
+                color: "#fff",
+                border: "2px solid var(--bg-root)",
               }}
             >
-              QE
-            </div>
-            <AnimatePresence>
-              <div className="hidden lg:flex flex-col">
-                <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
-                  Quality Engineer
-                </span>
-                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-                  Arad Group
-                </span>
-              </div>
-            </AnimatePresence>
-          </div>
+              {notificationCount}
+            </span>
+          )}
+        </button>
+
+        <div
+          className="flex h-8 w-8 cursor-default items-center justify-center rounded-full text-[13px] font-semibold"
+          style={{ background: "var(--gradient-ai)", color: "#fff" }}
+          title="Quality Engineer — Arad Group"
+        >
+          QE
         </div>
       </header>
 

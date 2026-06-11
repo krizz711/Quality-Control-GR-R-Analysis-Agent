@@ -39,6 +39,7 @@ export const useAppStore = create<AppState>((set) => ({
   pendingChatPrompt: "",
   setPendingChatPrompt: (prompt) => set({ pendingChatPrompt: prompt }),
 
-  notificationCount: 3,
+  // Synced from the backend (active alert count); starts at zero until loaded.
+  notificationCount: 0,
   setNotificationCount: (count) => set({ notificationCount: count }),
 }));

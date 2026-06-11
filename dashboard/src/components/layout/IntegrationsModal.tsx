@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { motion, AnimatePresence } from "framer-motion";
 import { Server, Database, MessageSquare, Activity, X, ArrowRight, CheckCircle2 } from "lucide-react";
@@ -63,7 +63,7 @@ export default function IntegrationsModal({ isOpen, onClose }: IntegrationsModal
                     <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
                       <Server size={20} />
                     </div>
-                    <h3 className="mb-2 font-bold text-white">FastAPI Backend Agent</h3>
+                    <h3 className="mb-2 font-semibold">FastAPI Backend Agent</h3>
                     <p className="mb-4 text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
                       The core intelligence engine. Receives telemetry via Kafka, processes GR&R/SPC algorithms, and stores state in TimescaleDB.
                     </p>
@@ -88,7 +88,7 @@ export default function IntegrationsModal({ isOpen, onClose }: IntegrationsModal
                     <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/20 text-blue-400">
                       <Database size={20} />
                     </div>
-                    <h3 className="mb-2 font-bold text-white">Data Synchronization</h3>
+                    <h3 className="mb-2 font-semibold">Data Synchronization</h3>
                     <p className="mb-4 text-xs leading-relaxed" style={{ color: "var(--text-secondary)" }}>
                       This Next.js UI fetches Live Data from the FastAPI Agent endpoints (`/spc/analyze`, `/grr/analyze`) using TanStack Query.
                     </p>
@@ -110,7 +110,7 @@ export default function IntegrationsModal({ isOpen, onClose }: IntegrationsModal
                         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-purple-500/10 text-purple-400">
                           <MessageSquare size={16} />
                         </div>
-                        <h4 className="font-bold text-sm text-white">Slack Alerts</h4>
+                        <h4 className="font-semibold text-sm">Slack Alerts</h4>
                       </div>
                       <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
                         Critical SPC rule violations trigger webhooks that instantly push Alert Cards with AI Root Cause to the #quality-control channel.
@@ -123,7 +123,7 @@ export default function IntegrationsModal({ isOpen, onClose }: IntegrationsModal
                         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-orange-500/10 text-orange-400">
                           <Activity size={16} />
                         </div>
-                        <h4 className="font-bold text-sm text-white">Grafana Metrics</h4>
+                        <h4 className="font-semibold text-sm">Grafana Metrics</h4>
                       </div>
                       <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
                         TimescaleDB exposes Prometheus metrics. Engineers can build deep-dive macro dashboards extending the Agent's insights.
@@ -134,19 +134,8 @@ export default function IntegrationsModal({ isOpen, onClose }: IntegrationsModal
 
                 {/* Footer Action */}
                 <div className="mt-8 flex justify-end gap-3 pt-6 border-t" style={{ borderColor: "var(--border-subtle)" }}>
-                  <button
-                    onClick={onClose}
-                    className="rounded-lg px-4 py-2 text-sm font-medium transition-colors"
-                    style={{ background: "var(--bg-elevated)", color: "var(--text-primary)" }}
-                  >
+                  <button onClick={onClose} className="btn btn-primary">
                     Close
-                  </button>
-                  <button
-                    onClick={onClose}
-                    className="rounded-lg px-4 py-2 text-sm font-medium transition-colors"
-                    style={{ background: "var(--accent)", color: "white" }}
-                  >
-                    Understood
                   </button>
                 </div>
               </div>

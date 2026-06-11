@@ -1,415 +1,459 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  Sparkles,
-  Search,
-  Volume2,
-  VolumeX,
-  Activity,
-  TrendingUp,
-  X,
-  Info,
-  Loader2
-} from "lucide-react";
-import { getAlerts, recordAlertFeedback, resolveAlert, showToast, type AlertItem } from "@/api/apiClient";
-import { useRealtimeStream } from "@/api/realtime";
+/* Alerts — prototype-exact severity feed + accuracy tracker, wired to live endpoints. */
 
-function formatTimeAgo(dateString: string) {
-  const date = new Date(dateString);
-  const diff = Date.now() - date.getTime();
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, Check, CheckCircle2, Loader2, X } from "lucide-react";
+import {
+  getAlertAccuracy,
+  getAlerts,
+  recordAlertFeedback,
+  resolveAlert,
+  type AlertAccuracyResponse,
+  type AlertItem,
+} from "@/api/apiClient";
+import { useRealtimeStream } from "@/api/realtime";
+import { useAppStore } from "@/lib/store";
+import { Card, StatusDot } from "@/components/ui/kit";
+import { toast } from "@/components/ui/fx";
+
+type FeedbackState = "confirmed" | "false";
+
+const FILTERS = ["All", "Critical", "High", "Medium", "Low"] as const;
+type Filter = (typeof FILTERS)[number];
+
+const sevConf: Record<string, { border: string; badge: string; label: string; filter: Filter; dot: "critical" | "warning" | "info" }> = {
+  critical: { border: "#ef4444", badge: "badge badge-critical", label: "Critical", filter: "Critical", dot: "critical" },
+  high: { border: "#ef4444", badge: "badge badge-critical", label: "High", filter: "High", dot: "critical" },
+  medium: { border: "#f59e0b", badge: "badge badge-warning", label: "Medium", filter: "Medium", dot: "warning" },
+  low: { border: "#3b82f6", badge: "badge badge-info", label: "Low", filter: "Low", dot: "info" },
+};
+
+function timeAgo(dateString: string) {
+  const diff = Date.now() - new Date(dateString).getTime();
   const mins = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
-
   if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} mins ago`;
-  if (hours < 24) return `${hours} hours ago`;
-  return `${days} days ago`;
+  if (mins < 60) return `${mins} min ago`;
+  if (hours < 24) return `${hours} hr ago`;
+  return `${days} d ago`;
 }
 
-function isToday(dateString: string | null | undefined) {
-  if (!dateString) return false;
-  const date = new Date(dateString);
-  const today = new Date();
-  return date.getDate() === today.getDate() &&
-    date.getMonth() === today.getMonth() &&
-    date.getFullYear() === today.getFullYear();
-}
+function AlertCard({
+  a,
+  fresh,
+  feedback,
+  resolving,
+  onConfirm,
+  onFalse,
+  onResolve,
+}: {
+  a: AlertItem;
+  fresh: boolean;
+  feedback?: FeedbackState;
+  resolving: boolean;
+  onConfirm: () => void;
+  onFalse: () => void;
+  onResolve: () => void;
+}) {
+  const c = sevConf[a.severity] || sevConf.low;
+  const dim = feedback === "false";
+  const borderC = feedback === "confirmed" ? "var(--success)" : c.border;
 
-function AlertIcon({ type }: { type: string }) {
-  if (type === "grr_fail") return <AlertTriangle size={18} className="text-amber-500" />;
-  if (type === "spc_violation") return <Activity size={18} className="text-rose-500" />;
-  if (type === "trend_detected") return <TrendingUp size={18} className="text-sky-500" />;
-  return <Info size={18} className="text-slate-500" />;
-}
-
-function SeverityBadge({ severity }: { severity: string }) {
-  const colors: Record<string, string> = {
-    critical: "bg-rose-500/10 text-rose-400 border-rose-500/20",
-    high: "bg-orange-500/10 text-orange-400 border-orange-500/20",
-    medium: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-    low: "bg-sky-500/10 text-sky-400 border-sky-500/20",
-  };
-  const color = colors[severity.toLowerCase()] || "bg-slate-500/10 text-slate-400 border-slate-500/20";
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${color}`}>
-      {severity}
-    </span>
+    <div
+      style={
+        {
+          position: "relative",
+          "--flash-c": c.border,
+          "--glow-c": "rgba(239,68,68,.5)",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--border-default)",
+          borderLeft: `3px solid ${borderC}`,
+          borderRadius: "var(--radius-md)",
+          padding: "14px 18px",
+          opacity: dim ? 0.5 : 1,
+          transition: "opacity .3s var(--ease-out), border-color .3s var(--ease-out)",
+          animation: fresh
+            ? `arad-alert-in .4s var(--ease-out)${a.severity === "critical" ? ", arad-glow-once 1s ease-out, arad-border-flash .7s ease-out" : ", arad-border-flash .6s ease-out"}`
+            : "none",
+        } as React.CSSProperties
+      }
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <StatusDot tone={feedback === "confirmed" ? "success" : c.dot} pulse={!feedback && a.severity === "critical"} size={7} />
+        <span className={c.badge}>{c.label}</span>
+        <span className="badge badge-neutral">{a.type.replace(/_/g, " ")}</span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-secondary)" }}>{a.process_name}</span>
+        <div style={{ flex: 1 }} />
+        {a.status === "resolved" && <span className="badge badge-success">Resolved</span>}
+        {feedback === "confirmed" && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontFamily: "var(--font-sans)",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--success)",
+              animation: "arad-reveal-up-sm .25s var(--ease-out)",
+            }}
+          >
+            <Check size={14} /> Confirmed
+          </span>
+        )}
+        {feedback === "false" && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontFamily: "var(--font-sans)",
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: ".04em",
+              textTransform: "uppercase",
+              color: "var(--text-muted)",
+            }}
+          >
+            False Positive
+          </span>
+        )}
+      </div>
+
+      <div style={{ position: "relative", display: "inline-block", fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--text-primary)", marginBottom: 4 }}>
+        {a.message}
+        {dim && (
+          <span
+            style={{
+              position: "absolute",
+              left: 0,
+              top: "50%",
+              height: 1,
+              background: "var(--text-muted)",
+              width: "100%",
+              transformOrigin: "left",
+              animation: "arad-grow-x .3s var(--ease-out)",
+            }}
+          />
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)" }}>{timeAgo(a.created_at)}</span>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", gap: 8 }}>
+          {!feedback && (
+            <>
+              <button onClick={onConfirm} className="btn btn-secondary !h-[30px] !px-3 text-xs">
+                <Check size={13} /> Confirm
+              </button>
+              <button onClick={onFalse} className="btn btn-ghost !h-[30px] !px-3 text-xs">
+                <X size={14} /> False positive
+              </button>
+            </>
+          )}
+          {a.status === "active" && (
+            <button onClick={onResolve} disabled={resolving} className="btn btn-success !h-[30px] !px-3 text-xs">
+              {resolving ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={13} />} Resolve
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
 export default function AlertsPage() {
+  const { setNotificationCount } = useAppStore();
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [accuracy, setAccuracy] = useState<AlertAccuracyResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "resolved">("all");
-  const [severityFilter, setSeverityFilter] = useState<"all" | "critical" | "high" | "medium" | "low">("all");
-  const [search, setSearch] = useState("");
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [selectedAlert, setSelectedAlert] = useState<AlertItem | null>(null);
+  const [filter, setFilter] = useState<Filter>("All");
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<string, FeedbackState>>({});
+  const [freshId, setFreshId] = useState<string | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
 
-  const fetchAlerts = async (silent = false) => {
+  // Sliding filter pill indicator
+  const fRef = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [ind, setInd] = useState({ left: 0, width: 0 });
+  useEffect(() => {
+    const el = fRef.current[filter];
+    if (el) setInd({ left: el.offsetLeft, width: el.offsetWidth });
+  }, [filter]);
+
+  const load = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const res = await getAlerts({ limit: 100 });
+      const [res, acc] = await Promise.all([getAlerts({ limit: 100 }), getAlertAccuracy().catch(() => null)]);
       setAlerts(res.items);
+      setAccuracy(acc);
+      setNotificationCount(res.items.filter((a) => a.status === "active").length);
     } catch (e) {
       console.error(e);
-      if (!silent) showToast("Failed to fetch alerts");
     } finally {
       if (!silent) setLoading(false);
     }
-  };
+  }, [setNotificationCount]);
 
   useEffect(() => {
-    fetchAlerts();
-  }, []);
+    void load();
+  }, [load]);
 
   useRealtimeStream({
     onEvent: (event) => {
-      const eventType = String(event.type || "");
-      if (eventType === "alert.created" || eventType === "dlq.fallback") {
-        void fetchAlerts(true);
-        if (soundEnabled && eventType === "alert.created" && typeof event.message === "string") {
-          showToast(`New Alert: ${event.message}`);
+      if (String(event.type || "") === "alert.created") {
+        void load(true);
+        if (typeof event.message === "string") {
+          toast({ type: "error", title: "New critical alert", msg: event.message });
         }
       }
     },
   });
 
-  const handleResolve = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleFeedback = async (a: AlertItem, isRelevant: boolean) => {
     try {
-      await resolveAlert(id);
-      showToast("Alert resolved successfully");
-      fetchAlerts(true);
-      if (selectedAlert?.id === id) {
-        setSelectedAlert(prev => prev ? { ...prev, status: "resolved", resolved_at: new Date().toISOString() } : null);
-      }
-    } catch (e) {
-      // toast shown by interceptor
-    }
-  };
-
-  const handleFeedback = async (alert: AlertItem, isRelevant: boolean) => {
-    try {
-      await recordAlertFeedback(alert.id, {
+      await recordAlertFeedback(a.id, {
         is_relevant: isRelevant,
         category: isRelevant ? "true_positive" : "false_positive",
         submitted_by: "quality-engineer",
       });
-      showToast(isRelevant ? "Alert marked relevant." : "Alert marked false positive.");
-    } catch (e) {
-      // toast shown by interceptor
+      setFeedbackGiven((prev) => ({ ...prev, [a.id]: isRelevant ? "confirmed" : "false" }));
+      setAccuracy(await getAlertAccuracy().catch(() => accuracy));
+      toast(
+        isRelevant
+          ? { type: "success", title: "Alert confirmed", msg: "Logged as true positive · accuracy updated" }
+          : { type: "warning", title: "Marked false positive", msg: "Model feedback recorded for retraining" }
+      );
+    } catch {
+      // interceptor surfaces the error toast
     }
   };
 
-  const filteredAlerts = useMemo(() => {
-    return alerts.filter(a => {
-      if (statusFilter !== "all" && a.status !== statusFilter) return false;
-      if (severityFilter !== "all" && a.severity !== severityFilter) return false;
-      if (search && !a.message.toLowerCase().includes(search.toLowerCase()) && !a.process_name.toLowerCase().includes(search.toLowerCase())) return false;
-      return true;
-    });
-  }, [alerts, statusFilter, severityFilter, search]);
+  const handleResolve = async (a: AlertItem) => {
+    setResolvingId(a.id);
+    try {
+      await resolveAlert(a.id);
+      await load(true);
+      toast({ type: "success", title: "Alert resolved", msg: `${a.process_name} · audit entry recorded` });
+    } catch {
+      // interceptor surfaces the error toast
+    } finally {
+      setResolvingId(null);
+    }
+  };
 
-  const stats = useMemo(() => {
-    return {
-      active: alerts.filter(a => a.status === "active").length,
-      critical: alerts.filter(a => a.status === "active" && a.severity === "critical").length,
-      resolvedToday: alerts.filter(a => a.status === "resolved" && isToday(a.resolved_at)).length,
-    };
-  }, [alerts]);
+  const visible = useMemo(
+    () => alerts.filter((a) => filter === "All" || (sevConf[a.severity] || sevConf.low).filter === filter),
+    [alerts, filter]
+  );
+
+  const accuracyRate = accuracy?.accuracy_rate ?? null;
+  const tp = accuracy?.relevant_count ?? 0;
+  const fp = accuracy?.false_positive_count ?? 0;
 
   return (
-    <div className="min-h-full bg-slate-950 px-4 py-6 text-slate-100 md:px-6">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6">
-        
-        {/* Header & Stats Bar */}
-        <header className="rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-5 shadow-lg">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-rose-500/20 bg-rose-500/10 text-rose-400">
-                  <AlertTriangle size={20} />
-                </div>
-                <div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
-                    Alerts Management
-                  </h1>
-                  <p className="mt-1 text-sm text-slate-400">
-                    Monitor quality violations and system notifications.
-                  </p>
-                </div>
-              </div>
-            </div>
-            
-            <div className="flex items-center gap-4 text-sm">
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
-                <span className="text-xl font-bold text-amber-400">{stats.active}</span>
-                <span className="text-xs uppercase tracking-wider text-slate-500">Active</span>
-              </div>
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
-                <span className="text-xl font-bold text-rose-400">{stats.critical}</span>
-                <span className="text-xs uppercase tracking-wider text-slate-500">Critical</span>
-              </div>
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
-                <span className="text-xl font-bold text-emerald-400">{stats.resolvedToday}</span>
-                <span className="text-xs uppercase tracking-wider text-slate-500">Resolved Today</span>
-              </div>
+    <div className="arad-page min-h-full overflow-y-auto" style={{ background: "var(--bg-root)" }}>
+      <div className="mx-auto flex min-h-full max-w-[1400px] flex-col px-6 py-6">
+        {/* Page header */}
+        <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 20 }}>
+          <div>
+            <h1 className="page-title">Alert Feed</h1>
+            <div className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
+              AI-detected SPC and GR&R violations, ordered by arrival
             </div>
           </div>
-        </header>
-
-        {/* Filters */}
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
-              {(["all", "active", "resolved"] as const).map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-colors ${statusFilter === s ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-            
-            <div className="h-6 w-px bg-slate-700 hidden sm:block"></div>
-
-            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
-              {(["all", "critical", "high", "medium", "low"] as const).map(sev => (
-                <button
-                  key={sev}
-                  onClick={() => setSeverityFilter(sev)}
-                  className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-colors ${severityFilter === sev ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  {sev}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-              <input
-                type="text"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search alerts..."
-                className="w-full sm:w-48 rounded-xl border border-slate-700 bg-slate-950/70 py-2 pl-9 pr-4 text-xs text-slate-100 outline-none focus:border-slate-500"
-              />
-            </div>
-            <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-              title={soundEnabled ? "Mute Notifications" : "Unmute Notifications"}
+          <div style={{ flex: 1 }} />
+          {accuracyRate !== null && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 12px",
+                background: "var(--bg-surface)",
+                border: "1px solid var(--border-default)",
+                borderRadius: "var(--radius-md)",
+              }}
             >
-              {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
-            </button>
-          </div>
-        </div>
-
-        {/* Alert List */}
-        <div className="grid gap-3">
-          {loading && alerts.length === 0 ? (
-            <div className="py-12 text-center text-slate-500 flex flex-col items-center">
-              <Loader2 size={24} className="animate-spin mb-2" />
-              Loading alerts...
-            </div>
-          ) : filteredAlerts.length === 0 ? (
-            <div className="py-12 text-center text-slate-500 bg-slate-900/50 rounded-2xl border border-dashed border-slate-800">
-              No alerts found matching the current filters.
-            </div>
-          ) : (
-            filteredAlerts.map(alert => (
-              <div
-                key={alert.id}
-                className="group flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 transition-colors hover:border-slate-700 hover:bg-slate-800/80"
+              <Activity size={14} style={{ color: "var(--success)" }} />
+              <span style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--text-secondary)" }}>Accuracy</span>
+              <span
+                key={accuracyRate.toFixed(1)}
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--success)",
+                  display: "inline-block",
+                  animation: "arad-count-bounce .4s var(--ease-out)",
+                }}
               >
-                <div className="flex items-start gap-4">
-                  <div className="mt-1">
-                    <AlertIcon type={alert.type} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <SeverityBadge severity={alert.severity} />
-                      <span className="text-xs font-medium text-slate-400">
-                        {alert.process_name}
-                      </span>
-                      {alert.status === "resolved" && (
-                        <span className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                          Resolved
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-sm font-medium text-slate-200 line-clamp-2 leading-relaxed max-w-2xl">
-                      {alert.message}
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-2 text-[11px] text-slate-500">
-                      <Clock size={12} />
-                      <span>{formatTimeAgo(alert.created_at)}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0 sm:ml-auto">
-                  {alert.status === "active" && (
-                    <button
-                      onClick={(e) => handleResolve(alert.id, e)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/20"
-                    >
-                      <CheckCircle2 size={14} /> Resolve
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setSelectedAlert(alert)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-700"
-                  >
-                    <Info size={14} /> View Details
-                  </button>
-                  <button
-                    onClick={() => void handleFeedback(alert, true)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
-                  >
-                    Relevant
-                  </button>
-                  <button
-                    onClick={() => void handleFeedback(alert, false)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
-                  >
-                    False Positive
-                  </button>
-                </div>
-              </div>
-            ))
+                {accuracyRate.toFixed(1)}%
+              </span>
+            </div>
           )}
         </div>
-      </div>
 
-      {/* Detail Modal */}
-      {selectedAlert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-3xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col max-h-[90vh]">
-            <div className="flex items-center justify-between border-b border-slate-800 p-5">
-              <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
-                <AlertIcon type={selectedAlert.type} /> Alert Details
-              </h2>
-              <button
-                onClick={() => setSelectedAlert(null)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            
-            <div className="overflow-y-auto p-5 space-y-6">
-              <div className="flex gap-2">
-                <SeverityBadge severity={selectedAlert.severity} />
-                <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${selectedAlert.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
-                  {selectedAlert.status}
-                </span>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Process</div>
-                <div className="text-base font-semibold text-slate-200">{selectedAlert.process_name}</div>
-              </div>
-
-              <div>
-                <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Message</div>
-                <div className="text-sm leading-relaxed text-slate-300 bg-slate-950/50 p-4 rounded-xl border border-slate-800">
-                  {selectedAlert.message}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Created</div>
-                  <div className="text-sm text-slate-300 flex items-center gap-1.5">
-                    <Clock size={14} className="text-slate-500" />
-                    {new Date(selectedAlert.created_at).toLocaleString()}
-                  </div>
-                </div>
-                {selectedAlert.resolved_at && (
-                  <div>
-                    <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Resolved</div>
-                    <div className="text-sm text-slate-300 flex items-center gap-1.5">
-                      <CheckCircle2 size={14} className="text-emerald-500" />
-                      {new Date(selectedAlert.resolved_at).toLocaleString()}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-widest mb-2">
-                  <Sparkles size={14} className="text-indigo-400" /> AI Analysis
-                </div>
-                <div className="text-sm leading-relaxed text-slate-300 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
-                  This alert was triggered by the automated monitoring system based on the severity and specific rules configured for <code className="text-indigo-300 bg-indigo-500/10 px-1 rounded">{selectedAlert.process_name}</code>. 
-                  <br /><br />
-                  <strong>Recommendation:</strong> Investigate the root cause immediately to ensure quality standards are met. If this is a recurring issue, consider adjusting the process control limits or retraining operators.
-                </div>
-              </div>
-            </div>
-
-            <div className="border-t border-slate-800 p-4 flex justify-end gap-3 bg-slate-900/50 rounded-b-3xl">
-              <button
-                onClick={() => setSelectedAlert(null)}
-                className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-slate-100"
-              >
-                Close
-              </button>
-              {selectedAlert.status === "active" && (
-                <button
-                  onClick={(e) => handleResolve(selectedAlert.id, e)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
-                >
-                  <CheckCircle2 size={16} /> Resolve Alert
-                </button>
-              )}
-              <button
-                onClick={() => void handleFeedback(selectedAlert, true)}
-                className="inline-flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20"
-              >
-                Relevant
-              </button>
-              <button
-                onClick={() => void handleFeedback(selectedAlert, false)}
-                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20"
-              >
-                False Positive
-              </button>
-            </div>
-          </div>
+        {/* Sliding filter pills */}
+        <div style={{ position: "relative", display: "inline-flex", gap: 6, marginBottom: 16, alignSelf: "flex-start" }}>
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: ind.left,
+              width: ind.width,
+              background: "var(--accent-bg)",
+              border: "1px solid var(--accent)",
+              borderRadius: 999,
+              transition: "left .2s var(--ease-out), width .2s var(--ease-out)",
+            }}
+          />
+          {FILTERS.map((f) => (
+            <button
+              key={f}
+              ref={(el) => {
+                fRef.current[f] = el;
+              }}
+              onClick={() => setFilter(f)}
+              style={{
+                position: "relative",
+                height: 30,
+                padding: "0 14px",
+                borderRadius: 999,
+                cursor: "pointer",
+                fontFamily: "var(--font-sans)",
+                fontSize: 12,
+                fontWeight: 500,
+                border: "1px solid transparent",
+                background: "transparent",
+                color: filter === f ? "var(--accent)" : "var(--text-secondary)",
+                transition: "color .2s",
+              }}
+            >
+              {f}
+            </button>
+          ))}
         </div>
-      )}
+
+        {/* Feed + tracker */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_280px]" style={{ alignItems: "start" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {loading && alerts.length === 0 ? (
+              <div className="flex flex-col items-center py-14" style={{ color: "var(--text-muted)" }}>
+                <Loader2 size={22} className="mb-2 animate-spin" /> Loading alerts...
+              </div>
+            ) : visible.length === 0 ? (
+              <div
+                style={{
+                  padding: 40,
+                  textAlign: "center",
+                  fontFamily: "var(--font-sans)",
+                  fontSize: 13,
+                  color: "var(--text-muted)",
+                  border: "1px dashed var(--border-default)",
+                  borderRadius: "var(--radius-lg)",
+                }}
+              >
+                {filter === "All" ? "No alerts in the current window." : `No ${filter.toLowerCase()} alerts in the current window.`}
+              </div>
+            ) : (
+              visible.map((a, i) => (
+                <div key={a.id} style={{ animation: a.id !== freshId ? `arad-reveal-up-sm .3s ${i * 35}ms var(--ease-out) both` : "none" }}>
+                  <AlertCard
+                    a={a}
+                    fresh={a.id === freshId}
+                    feedback={feedbackGiven[a.id]}
+                    resolving={resolvingId === a.id}
+                    onConfirm={() => {
+                      setFreshId(null);
+                      void handleFeedback(a, true);
+                    }}
+                    onFalse={() => void handleFeedback(a, false)}
+                    onResolve={() => void handleResolve(a)}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Accuracy Tracker */}
+          <Card padding={20}>
+            <h2 style={{ margin: "0 0 16px", fontFamily: "var(--font-sans)", fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
+              Accuracy Tracker
+            </h2>
+            {accuracyRate !== null ? (
+              <>
+                <div
+                  key={accuracyRate.toFixed(1)}
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 32,
+                    fontWeight: 600,
+                    color: accuracyRate >= 95 ? "var(--success)" : "var(--warning)",
+                    lineHeight: 1,
+                    animation: "arad-flash-text .5s ease-out",
+                  }}
+                >
+                  {accuracyRate.toFixed(1)}%
+                </div>
+                <div style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+                  {accuracy?.feedback_count ?? 0} feedback entries
+                </div>
+                <div style={{ height: 1, background: "var(--border-default)", margin: "16px 0" }} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--font-sans)", fontSize: 13 }}>
+                    <span style={{ color: "var(--text-secondary)" }}>True positives</span>
+                    <span
+                      key={tp}
+                      style={{ fontFamily: "var(--font-mono)", color: "var(--success)", fontWeight: 600, display: "inline-block", animation: "arad-count-bounce .4s var(--ease-out)" }}
+                    >
+                      {tp}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "var(--font-sans)", fontSize: 13 }}>
+                    <span style={{ color: "var(--text-secondary)" }}>False positives</span>
+                    <span
+                      key={fp}
+                      style={{ fontFamily: "var(--font-mono)", color: "var(--critical)", fontWeight: 600, display: "inline-block", animation: "arad-count-bounce .4s var(--ease-out)" }}
+                    >
+                      {fp}
+                    </span>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    marginTop: 18,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    background: accuracy?.target_met ? "var(--success-fill)" : "var(--warning-fill)",
+                    width: "100%",
+                    boxSizing: "border-box",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Check size={14} style={{ color: accuracy?.target_met ? "var(--success-text)" : "var(--warning-text)" }} />
+                  <span style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 600, color: accuracy?.target_met ? "var(--success-text)" : "var(--warning-text)" }}>
+                    {accuracy?.target_met ? "On Track vs 95% target" : "Below 95% target"}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <p style={{ fontFamily: "var(--font-sans)", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>
+                No feedback yet. Use <strong style={{ color: "var(--text-secondary)" }}>Confirm</strong> and{" "}
+                <strong style={{ color: "var(--text-secondary)" }}>False positive</strong> on alerts to start tracking accuracy against the
+                95% target.
+              </p>
+            )}
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }

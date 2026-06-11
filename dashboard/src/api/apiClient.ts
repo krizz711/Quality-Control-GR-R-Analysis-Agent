@@ -159,7 +159,13 @@ export interface UseApiState<T> {
   refetch: () => void;
 }
 
+export const API_BASE_URL_STORAGE_KEY = "arad-api-base-url";
+export const API_KEY_STORAGE_KEY = "arad-api-key";
+
 export const resolveApiBaseUrl = () => {
+  // User override from Settings takes precedence over build-time env values.
+  const storedUrl =
+    typeof window !== "undefined" ? window.localStorage.getItem(API_BASE_URL_STORAGE_KEY) : null;
   const viteUrl =
     typeof import.meta !== "undefined"
       ? (import.meta as ImportMeta & { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL
@@ -171,9 +177,20 @@ export const resolveApiBaseUrl = () => {
         }).process?.env?.NEXT_PUBLIC_API_URL
       : undefined;
 
-  // Force production client to use local backend when not otherwise provided.
-  // Prefer Vite (dev), Next public env (build), fallback to loopback API port.
-  return viteUrl || nextUrl || "http://127.0.0.1:8000";
+  return storedUrl || viteUrl || nextUrl || "http://127.0.0.1:8000";
+};
+
+export const resolveApiKey = () => {
+  const storedKey =
+    typeof window !== "undefined" ? window.localStorage.getItem(API_KEY_STORAGE_KEY) : null;
+  const envKey =
+    typeof globalThis !== "undefined"
+      ? (globalThis as typeof globalThis & {
+          process?: { env?: { NEXT_PUBLIC_API_KEY?: string } };
+        }).process?.env?.NEXT_PUBLIC_API_KEY
+      : undefined;
+
+  return storedKey || envKey || "";
 };
 
 const axiosInstance = axios.create({
@@ -193,9 +210,18 @@ function getErrorMessage(error: unknown): string {
   return "Request failed";
 }
 
-function showToast(message: string) {
+function showToast(message: string, type: "success" | "error" | "warning" | "info" = "info") {
   if (typeof window === "undefined") {
     console.error(message);
+    return;
+  }
+
+  // Prefer the Arad toast system when mounted (ToastViewport registers this bridge).
+  const aradToast = (window as unknown as {
+    __aradToast?: (t: { type?: string; title: string }) => void;
+  }).__aradToast;
+  if (aradToast) {
+    aradToast({ type, title: message });
     return;
   }
 
@@ -253,13 +279,19 @@ export { showToast };
 axiosInstance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   config.headers = config.headers || {};
   config.headers["Content-Type"] = "application/json";
+  // Base URL and API key can be changed at runtime from Settings.
+  config.baseURL = resolveApiBaseUrl();
+  const apiKey = resolveApiKey();
+  if (apiKey) {
+    config.headers["X-API-Key"] = apiKey;
+  }
   return config;
 });
 
 axiosInstance.interceptors.response.use(
   (response) => response.data,
   (error) => {
-    showToast(getErrorMessage(error));
+    showToast(getErrorMessage(error), "error");
     return Promise.reject(error);
   }
 );
@@ -285,14 +317,8 @@ export const apiClient = {
     return request<T>({ ...config, method: "DELETE", url });
   },
   async getFile(path: string, timeout?: number): Promise<Blob> {
-    const API_URL =
-      typeof window !== "undefined"
-        ? (window as any).NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000"
-        : process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
-    const API_KEY =
-      typeof window !== "undefined"
-        ? (window as any).NEXT_PUBLIC_API_KEY || ""
-        : process.env.NEXT_PUBLIC_API_KEY || "";
+    const API_URL = resolveApiBaseUrl();
+    const API_KEY = resolveApiKey();
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout || 30000);
@@ -348,6 +374,31 @@ export const getAlertAccuracy = () =>
 
 // Audit Log
 export const getAuditLog = () => apiClient.get<AuditLogItem[]>("/api/v1/audit-log");
+
+// Review Queue
+export interface ReviewQueueItem {
+  id: string;
+  study_id: string;
+  status: string;
+  assigned_to?: string | null;
+  due_at?: string | null;
+  created_at?: string | null;
+  grr_pct?: number | null;
+  ndc?: number | null;
+  equipment_id: string;
+  characteristic_name: string;
+}
+
+export interface ReviewDecisionInput {
+  decision: "approved" | "rejected";
+  notes?: string;
+  decided_by: string;
+}
+
+export const getReviews = () => apiClient.get<ReviewQueueItem[]>("/api/v1/reviews");
+
+export const decideReview = (reviewId: string, data: ReviewDecisionInput) =>
+  apiClient.patch<Record<string, unknown>>(`/api/v1/reviews/${reviewId}`, data);
 
 export function useApi<T>(apiCall: () => Promise<T>, deps: unknown[] = []): UseApiState<T> {
   const [data, setData] = useState<T | null>(null);

@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "description": "Arad Quality Intelligence — QC & GR&R Analysis Dashboard",
   "scripts": {
-    "start": "python -m http.server 5173",
-    "dev": "python -m http.server 5173",
-    "open": "start http://localhost:5173/app/"
+    "dev": "npm --prefix dashboard run dev",
+    "build": "npm --prefix dashboard run build",
+    "start": "npm --prefix dashboard run start"
   },
   "engines": {
     "node": ">=18"
