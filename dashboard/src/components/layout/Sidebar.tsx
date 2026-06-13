@@ -9,99 +9,211 @@ import {
   FlaskConical,
   ChevronLeft,
   ChevronRight,
-  Cpu,
+  Hexagon,
   Wifi,
   Settings,
   HelpCircle,
+  ClipboardCheck,
+  ScrollText,
 } from "lucide-react";
+import { useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import SettingsModal from "./SettingsModal";
 import { showToast } from "@/api/apiClient";
 
 const navItems = [
   { id: "dashboard", label: "Overview", icon: LayoutDashboard },
   { id: "grr", label: "GR&R Studies", icon: FlaskConical },
+  { id: "review", label: "Review Queue", icon: ClipboardCheck },
   { id: "spc", label: "SPC Monitor", icon: Activity },
-  { id: "alerts", label: "Alert Inbox", icon: AlertTriangle, badge: 3 },
-  { id: "chat", label: "AI Copilot", icon: MessageSquare },
-];
-
-const bottomItems = [
-  { id: "settings", label: "Settings", icon: Settings },
-  { id: "help", label: "Help & Docs", icon: HelpCircle },
+  { id: "alerts", label: "Alert Inbox", icon: AlertTriangle, badgeFromStore: true },
+  { id: "audit", label: "Audit Trail", icon: ScrollText },
+  { id: "chat", label: "AI Copilot", icon: MessageSquare, ai: true },
 ];
 
 export default function Sidebar() {
-  const { sidebarCollapsed, toggleSidebar, activePage, setActivePage } = useAppStore();
+  const { sidebarCollapsed, toggleSidebar, activePage, setActivePage, notificationCount } = useAppStore();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
-    <motion.aside
-      initial={false}
-      animate={{ width: sidebarCollapsed ? 64 : 240 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className="relative flex flex-col h-full border-r z-20 shrink-0"
-      style={{
-        background: "var(--bg-primary)",
-        borderColor: "var(--border-subtle)",
-      }}
-    >
-      {/* Logo */}
-      <div className="flex items-center h-14 px-4 border-b" style={{ borderColor: "var(--border-subtle)" }}>
-        <div className="flex items-center gap-2.5 overflow-hidden">
-          <div
-            className="flex items-center justify-center w-8 h-8 rounded-lg shrink-0"
-            style={{
-              background: "linear-gradient(135deg, var(--accent), var(--accent-dim))",
-              boxShadow: "0 0 16px rgba(99,145,255,0.2)",
-            }}
-          >
-            <Cpu size={16} color="white" strokeWidth={2.5} />
+    <>
+      <motion.aside
+        initial={false}
+        animate={{ width: sidebarCollapsed ? 64 : 248 }}
+        transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+        className="glass relative z-20 flex h-full shrink-0 flex-col border-r"
+        style={{ borderColor: "var(--border-subtle)" }}
+      >
+        {/* Logo */}
+        <div className="flex h-16 items-center border-b px-4" style={{ borderColor: "var(--border-subtle)" }}>
+          <div className="flex items-center gap-3 overflow-hidden">
+            <div className="relative flex h-9 w-9 shrink-0 items-center justify-center">
+              <div
+                className="absolute inset-0 rounded-xl"
+                style={{
+                  background: "linear-gradient(135deg, #4e8cff 0%, #8b5cf6 100%)",
+                  boxShadow: "0 0 22px -2px rgba(78,140,255,0.55), inset 0 1px 0 rgba(255,255,255,0.3)",
+                }}
+              />
+              <Hexagon size={18} color="white" strokeWidth={2.2} className="relative z-10" />
+              <span
+                className="absolute z-10 font-mono text-[8px] font-bold tracking-tighter"
+                style={{ color: "white" }}
+              >
+                A
+              </span>
+            </div>
+            <AnimatePresence>
+              {!sidebarCollapsed && (
+                <motion.div
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -8 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex min-w-0 flex-col"
+                >
+                  <span
+                    className="text-display truncate text-[15px] font-semibold leading-tight"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    Arad Quality
+                  </span>
+                  <span
+                    className="truncate font-mono text-[9.5px] font-medium uppercase tracking-[0.18em]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Intelligence
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
+        </div>
+
+        {/* System Status */}
+        <AnimatePresence>
+          {!sidebarCollapsed && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="px-3 pb-1 pt-3"
+            >
+              <div
+                className="edge-glow relative flex items-center gap-2.5 overflow-hidden rounded-lg px-3 py-2"
+                style={{
+                  background: "linear-gradient(180deg, rgba(16,185,129,0.09), rgba(16,185,129,0.03))",
+                  border: "1px solid rgba(16,185,129,0.16)",
+                }}
+              >
+                <div className="live-dot" style={{ width: 6, height: 6 }} />
+                <span className="text-[11px] font-medium" style={{ color: "var(--success-text)" }}>
+                  All Systems Operational
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Navigation */}
+        <nav className="flex-1 space-y-0.5 overflow-y-auto px-2 py-3">
           <AnimatePresence>
             {!sidebarCollapsed && (
               <motion.div
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -8 }}
-                transition={{ duration: 0.2 }}
-                className="flex flex-col min-w-0"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="px-3 pb-2"
               >
-                <span className="text-sm font-semibold truncate" style={{ color: "var(--text-primary)" }}>
-                  Arad Quality
-                </span>
-                <span className="text-[10px] font-medium truncate" style={{ color: "var(--text-muted)" }}>
-                  Intelligence Platform
+                <span className="section-label text-[9.5px]" style={{ color: "var(--text-ghost)" }}>
+                  Operations
                 </span>
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
-      </div>
 
-      {/* System Status */}
-      <AnimatePresence>
-        {!sidebarCollapsed && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="px-3 pt-3 pb-1"
-          >
-            <div
-              className="flex items-center gap-2 px-3 py-2 rounded-lg"
-              style={{ background: "var(--accent-bg)", border: "1px solid rgba(99,145,255,0.08)" }}
-            >
-              <div className="live-dot" style={{ width: 6, height: 6 }} />
-              <span className="text-[11px] font-medium" style={{ color: "var(--accent-bright)" }}>
-                All Systems Operational
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          {navItems.map((item) => {
+            const isActive = activePage === item.id;
+            const badge = item.badgeFromStore ? notificationCount : undefined;
+            return (
+              <motion.button
+                key={item.id}
+                onClick={() => setActivePage(item.id)}
+                whileTap={{ scale: 0.98 }}
+                className={cn(
+                  "group relative flex w-full cursor-pointer items-center rounded-lg transition-colors duration-150",
+                  sidebarCollapsed ? "justify-center px-2 py-2.5" : "gap-2.5 px-3 py-[8.5px]"
+                )}
+                style={{
+                  color: isActive ? "var(--accent-bright)" : "var(--text-secondary)",
+                }}
+                title={sidebarCollapsed ? item.label : undefined}
+              >
+                {isActive && (
+                  <motion.div
+                    layoutId="sidebar-active"
+                    className="absolute inset-0 rounded-lg"
+                    style={{
+                      background: "linear-gradient(90deg, rgba(78,140,255,0.14), rgba(78,140,255,0.05))",
+                      border: "1px solid rgba(78,140,255,0.18)",
+                      boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                    }}
+                    transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                  />
+                )}
+                {isActive && !sidebarCollapsed && (
+                  <motion.div
+                    layoutId="sidebar-active-bar"
+                    className="absolute left-0 top-1/2 h-4 w-[2.5px] -translate-y-1/2 rounded-full"
+                    style={{ background: "var(--accent)", boxShadow: "0 0 8px rgba(78,140,255,0.9)" }}
+                    transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                  />
+                )}
+                <item.icon
+                  size={17}
+                  strokeWidth={isActive ? 2.2 : 1.8}
+                  className="relative z-10 shrink-0 transition-transform duration-150 group-hover:scale-110"
+                  style={item.ai && !isActive ? { color: "var(--accent-ai-bright)" } : undefined}
+                />
+                <AnimatePresence>
+                  {!sidebarCollapsed && (
+                    <motion.span
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className={cn("relative z-10 truncate text-[13px]", isActive ? "font-semibold" : "font-medium")}
+                    >
+                      {item.label}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+                {!!badge && badge > 0 && !sidebarCollapsed && (
+                  <motion.span
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    className="relative z-10 ml-auto flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 font-mono text-[10px] font-bold"
+                    style={{
+                      background: "var(--critical)",
+                      color: "white",
+                      boxShadow: "0 0 12px -2px rgba(239,68,68,0.8)",
+                    }}
+                  >
+                    {badge}
+                  </motion.span>
+                )}
+                {!!badge && badge > 0 && sidebarCollapsed && (
+                  <span
+                    className="absolute right-1 top-1 h-2 w-2 rounded-full"
+                    style={{ background: "var(--critical)", boxShadow: "0 0 8px rgba(239,68,68,0.9)" }}
+                  />
+                )}
+              </motion.button>
+            );
+          })}
+        </nav>
 
-      {/* Navigation */}
-      <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+        {/* Active Agents */}
         <AnimatePresence>
           {!sidebarCollapsed && (
             <motion.div
@@ -110,142 +222,82 @@ export default function Sidebar() {
               exit={{ opacity: 0 }}
               className="px-3 pb-2"
             >
-              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-ghost)" }}>
-                Navigation
-              </span>
+              <div className="px-2 pb-2">
+                <span className="section-label text-[9.5px]" style={{ color: "var(--text-ghost)" }}>
+                  Active Agents
+                </span>
+              </div>
+              <div
+                className="space-y-1.5 rounded-xl border p-2.5"
+                style={{ borderColor: "var(--border-subtle)", background: "rgba(9,13,20,0.55)" }}
+              >
+                {[
+                  { name: "SPC Monitor", detail: "streaming", icon: Wifi },
+                  { name: "Alert Engine", detail: "armed", icon: AlertTriangle },
+                ].map((agent) => (
+                  <div key={agent.name} className="flex items-center gap-2.5 px-1 py-0.5">
+                    <div className="live-dot" style={{ width: 5, height: 5 }} />
+                    <span className="truncate text-[11.5px] font-medium" style={{ color: "var(--text-secondary)" }}>
+                      {agent.name}
+                    </span>
+                    <span
+                      className="ml-auto font-mono text-[9px] uppercase tracking-widest"
+                      style={{ color: "var(--text-ghost)" }}
+                    >
+                      {agent.detail}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {navItems.map((item) => {
-          const isActive = activePage === item.id;
-          return (
-            <motion.button
-              key={item.id}
-              onClick={() => setActivePage(item.id)}
-              whileHover={{ x: 2 }}
-              whileTap={{ scale: 0.98 }}
-              className={cn(
-                "relative flex items-center w-full rounded-lg transition-colors duration-150",
-                sidebarCollapsed ? "justify-center px-2 py-2.5" : "gap-2.5 px-3 py-2"
-              )}
-              style={{
-                background: isActive ? "var(--accent-bg)" : "transparent",
-                color: isActive ? "var(--accent-bright)" : "var(--text-secondary)",
-              }}
-              title={sidebarCollapsed ? item.label : undefined}
-            >
-              {isActive && (
-                <motion.div
-                  layoutId="sidebar-active"
-                  className="absolute inset-0 rounded-lg"
-                  style={{
-                    background: "var(--accent-bg)",
-                    border: "1px solid rgba(99,145,255,0.1)",
-                  }}
-                  transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                />
-              )}
-              <item.icon size={18} className="relative z-10 shrink-0" />
-              <AnimatePresence>
-                {!sidebarCollapsed && (
-                  <motion.span
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="relative z-10 text-[13px] font-medium truncate"
-                  >
-                    {item.label}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-              {item.badge && !sidebarCollapsed && (
-                <motion.span
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  className="relative z-10 ml-auto flex items-center justify-center min-w-[18px] h-[18px] rounded-full text-[10px] font-bold"
-                  style={{ background: "var(--critical)", color: "white" }}
-                >
-                  {item.badge}
-                </motion.span>
-              )}
-              {item.badge && sidebarCollapsed && (
-                <span
-                  className="absolute top-1 right-1 w-2 h-2 rounded-full"
-                  style={{ background: "var(--critical)" }}
-                />
-              )}
-            </motion.button>
-          );
-        })}
-      </nav>
-
-      {/* Active Agents */}
-      <AnimatePresence>
-        {!sidebarCollapsed && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="px-3 pb-2"
-          >
-            <div className="px-3 pb-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-ghost)" }}>
-                Active Agents
-              </span>
-            </div>
-            <div className="space-y-1 px-1">
-              {[
-                { name: "SPC Monitor", status: "running", icon: Wifi },
-                { name: "Alert Engine", status: "running", icon: AlertTriangle },
-              ].map((agent) => (
-                <div
-                  key={agent.name}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-md"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  <div className="live-dot" style={{ width: 5, height: 5 }} />
-                  <span className="text-[11px] truncate">{agent.name}</span>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Bottom nav */}
-      <div className="px-2 py-2 border-t space-y-0.5" style={{ borderColor: "var(--border-subtle)" }}>
-        {bottomItems.map((item) => (
+        {/* Bottom nav */}
+        <div className="space-y-0.5 border-t px-2 py-2" style={{ borderColor: "var(--border-subtle)" }}>
           <button
-            key={item.id}
-            onClick={() => showToast(`${item.label} is not wired yet.`)}
+            onClick={() => setSettingsOpen(true)}
             className={cn(
-              "flex items-center w-full rounded-lg transition-colors duration-150",
+              "flex w-full cursor-pointer items-center rounded-lg transition-colors duration-150 hover:bg-[var(--bg-elevated)]",
               sidebarCollapsed ? "justify-center px-2 py-2.5" : "gap-2.5 px-3 py-2"
             )}
             style={{ color: "var(--text-muted)" }}
-            title={sidebarCollapsed ? item.label : undefined}
+            title={sidebarCollapsed ? "Settings" : undefined}
           >
-            <item.icon size={16} className="shrink-0" />
-            {!sidebarCollapsed && (
-              <span className="text-[12px] truncate">{item.label}</span>
-            )}
+            <Settings size={15} className="shrink-0" />
+            {!sidebarCollapsed && <span className="truncate text-[12px]">Settings</span>}
           </button>
-        ))}
-      </div>
+          <button
+            onClick={() => showToast("Documentation portal coming soon.", "info")}
+            className={cn(
+              "flex w-full cursor-pointer items-center rounded-lg transition-colors duration-150 hover:bg-[var(--bg-elevated)]",
+              sidebarCollapsed ? "justify-center px-2 py-2.5" : "gap-2.5 px-3 py-2"
+            )}
+            style={{ color: "var(--text-muted)" }}
+            title={sidebarCollapsed ? "Help & Docs" : undefined}
+          >
+            <HelpCircle size={15} className="shrink-0" />
+            {!sidebarCollapsed && <span className="truncate text-[12px]">Help & Docs</span>}
+          </button>
+        </div>
 
-      {/* Collapse toggle */}
-      <button
-        onClick={toggleSidebar}
-        className="absolute -right-3 top-20 flex items-center justify-center w-6 h-6 rounded-full border z-30 transition-colors"
-        style={{
-          background: "var(--bg-elevated)",
-          borderColor: "var(--border-default)",
-          color: "var(--text-muted)",
-        }}
-      >
-        {sidebarCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
-      </button>
-    </motion.aside>
+        {/* Collapse toggle */}
+        <button
+          onClick={toggleSidebar}
+          className="absolute -right-3 top-[72px] z-30 flex h-6 w-6 cursor-pointer items-center justify-center rounded-full border transition-colors hover:border-[var(--border-accent)]"
+          style={{
+            background: "var(--bg-elevated)",
+            borderColor: "var(--border-strong)",
+            color: "var(--text-muted)",
+            boxShadow: "var(--shadow-sm)",
+          }}
+          aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {sidebarCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+        </button>
+      </motion.aside>
+
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </>
   );
 }

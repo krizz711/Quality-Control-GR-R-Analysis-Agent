@@ -9,6 +9,21 @@ export function formatPercent(value: number, decimals = 1): string {
   return `${value.toFixed(decimals)}%`;
 }
 
+/**
+ * Parse a timestamp coming from the API. Naive ISO strings (no timezone
+ * marker) are UTC on the backend, so treat them as UTC — otherwise the UI
+ * shows times shifted by the local offset (e.g. "5 hours ago" for new alerts).
+ */
+export function parseApiDate(value: string | Date): Date {
+  if (value instanceof Date) return value;
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(value);
+  const isoLike = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(value);
+  if (isoLike && !hasTimezone) {
+    return new Date(`${value.replace(" ", "T")}Z`);
+  }
+  return new Date(value);
+}
+
 export function formatNumber(value: number, decimals = 2): string {
   return value.toFixed(decimals);
 }

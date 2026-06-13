@@ -30,11 +30,14 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ background: "var(--bg-root)" }}>
+      {/* Ambient engineering-grid + aurora backdrop */}
+      <div className="app-backdrop" aria-hidden />
+
       {/* Sidebar */}
       <Sidebar />
 
       {/* Main area */}
-      <div className="flex flex-col flex-1 min-w-0 h-full">
+      <div className="relative z-10 flex flex-col flex-1 min-w-0 h-full">
         {/* Command Bar */}
         <CommandBar />
 
@@ -54,17 +57,20 @@ export default function Home() {
           </AnimatePresence>
         </main>
 
-        {/* Trust footer — exact design-system copy */}
+        {/* Trust footer */}
         <footer
-          className="flex h-9 shrink-0 items-center gap-2 border-t px-6 text-xs"
-          style={{ borderColor: "var(--border-default)", color: "var(--text-muted)" }}
+          className="glass flex h-9 shrink-0 items-center gap-2 border-t px-6 text-[11px] tracking-wide"
+          style={{ borderColor: "var(--border-subtle)", color: "var(--text-muted)" }}
         >
-          <Lock size={12} />
+          <Lock size={11} style={{ color: "var(--success)" }} />
           <span>All data encrypted in transit</span>
-          <span className="opacity-50">·</span>
+          <span className="opacity-40">·</span>
           <span>SOC 2 Type II</span>
-          <span className="opacity-50">·</span>
+          <span className="opacity-40">·</span>
           <span>Full audit trail</span>
+          <span className="ml-auto hidden font-mono text-[10px] uppercase tracking-widest opacity-60 sm:block">
+            Arad Quality Intelligence · v0.1
+          </span>
         </footer>
       </div>
 

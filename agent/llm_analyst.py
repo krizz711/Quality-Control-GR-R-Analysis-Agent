@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +24,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 logger = logging.getLogger(__name__)
 
 # ── Gemini API constants ──────────────────────────────────────────────────────
-_MODEL = "gemini-2.5-flash"
+_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Quota and availability differ per model; walk this chain before giving up.
+_MODEL_CHAIN = [_MODEL, "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest"]
 _MAX_TOKENS = 1024
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -96,13 +100,14 @@ async def _call_gemini_inner(
     *,
     system: str = _SYSTEM_PROMPT,
     max_tokens: int = _MAX_TOKENS,
+    model: str = _MODEL,
 ) -> tuple[str, int, int]:
     """
     Inner call to Gemini REST API. Returns (text, input_tokens, output_tokens).
     API key is passed via x-goog-api-key header (not URL param).
     Retries up to 3× on transient transport errors.
     """
-    url = f"{_GEMINI_BASE_URL}/{_MODEL}:generateContent"
+    url = f"{_GEMINI_BASE_URL}/{model}:generateContent"
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": api_key,
@@ -134,20 +139,32 @@ async def _call_gemini(
 ) -> str:
     """
     Public wrapper. Never raises — returns an error placeholder on failure.
+    Walks the model chain on per-model quota/availability errors.
     Logs token usage via Prometheus and MLflow.
     """
-    try:
-        text, input_tokens, output_tokens = await _call_gemini_inner(
-            user_message, api_key, system=system, max_tokens=max_tokens
-        )
-        _record_token_usage(use_case, input_tokens, output_tokens)
-        return text
-    except httpx.HTTPStatusError as exc:
-        logger.error("Gemini API HTTP error %s: %s", exc.response.status_code, exc.response.text)
-        return f"[AI analysis unavailable: HTTP {exc.response.status_code}]"
-    except Exception as exc:
-        logger.error("Gemini API call failed: %s", exc)
-        return f"[AI analysis unavailable: {exc}]"
+    last_error = "unknown error"
+    seen: set[str] = set()
+    for model in _MODEL_CHAIN:
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        try:
+            text, input_tokens, output_tokens = await _call_gemini_inner(
+                user_message, api_key, system=system, max_tokens=max_tokens, model=model
+            )
+            _record_token_usage(use_case, input_tokens, output_tokens)
+            return text
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.warning("Gemini model %s HTTP %s; trying next model", model, status)
+            last_error = f"HTTP {status}"
+            if status not in (404, 429, 500, 503):
+                break
+        except Exception as exc:
+            logger.error("Gemini model %s failed: %s", model, exc)
+            last_error = str(exc)
+
+    return f"[AI analysis unavailable: {last_error}]"
 
 
 try:
@@ -518,7 +535,6 @@ CURRENT SYSTEM STATE:
         messages.append({"role": role, "parts": [{"text": turn["content"]}]})
     messages.append({"role": "user", "parts": [{"text": question}]})
 
-    url = f"{_GEMINI_BASE_URL}/{_MODEL}:generateContent"
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": api_key,
@@ -529,21 +545,33 @@ CURRENT SYSTEM STATE:
         "generationConfig": {"maxOutputTokens": 600},
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
-            usage = data.get("usageMetadata", {})
-            _record_token_usage(
-                "chat",
-                usage.get("promptTokenCount", 0),
-                usage.get("candidatesTokenCount", 0),
-            )
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-    except httpx.HTTPStatusError as exc:
-        logger.error("Gemini chat error %s", exc.response.status_code)
-        return f"I'm having trouble connecting right now (HTTP {exc.response.status_code}). Please try again."
-    except Exception as exc:
-        logger.error("Gemini chat failed: %s", exc)
-        return "I'm temporarily unavailable. Please try again in a moment."
+    last_status: int | None = None
+    seen: set[str] = set()
+    for model in _MODEL_CHAIN:
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        url = f"{_GEMINI_BASE_URL}/{model}:generateContent"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=body)
+                response.raise_for_status()
+                data = response.json()
+                usage = data.get("usageMetadata", {})
+                _record_token_usage(
+                    "chat",
+                    usage.get("promptTokenCount", 0),
+                    usage.get("candidatesTokenCount", 0),
+                )
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except httpx.HTTPStatusError as exc:
+            last_status = exc.response.status_code
+            logger.warning("Gemini chat model %s HTTP %s; trying next model", model, last_status)
+            if last_status not in (404, 429, 500, 503):
+                break
+        except Exception as exc:
+            logger.error("Gemini chat model %s failed: %s", model, exc)
+
+    if last_status is not None:
+        return f"I'm having trouble connecting right now (HTTP {last_status}). Please try again."
+    return "I'm temporarily unavailable. Please try again in a moment."

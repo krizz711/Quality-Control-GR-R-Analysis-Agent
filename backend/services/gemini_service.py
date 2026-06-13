@@ -17,25 +17,41 @@ import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
-# Lazy-initialized Gemini model. Do not crash on import when GEMINI_API_KEY is
+# Lazy-initialized Gemini models. Do not crash on import when GEMINI_API_KEY is
 # absent — initialize at call time to allow running the API without AI keys.
-_model = None
+_models: dict[str, Any] = {}
+_configured = False
 MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
+# Quota and availability differ per model; walk this chain before giving up.
+_MODEL_CHAIN = [MODEL_NAME, "gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest"]
 
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
 
-def _ensure_model() -> None:
-    """Ensure the global _model is configured. Raises ValueError if key missing."""
-    global _model
-    if _model is not None:
+class AIGenerationError(RuntimeError):
+    """All Gemini models failed; callers should fall back to deterministic text."""
+
+
+def _ensure_configured() -> None:
+    """Configure the Gemini SDK. Raises ValueError if the API key is missing."""
+    global _configured
+    if _configured:
         return
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not set; Gemini calls are disabled")
     genai.configure(api_key=api_key)
-    _model = genai.GenerativeModel(MODEL_NAME)
+    _configured = True
+
+
+def _get_model(name: str):
+    model = _models.get(name)
+    if model is None:
+        model = genai.GenerativeModel(name)
+        _models[name] = model
+    return model
 
 _T = TypeVar("_T")
 
@@ -54,23 +70,87 @@ def _build_prompt(task_name: str, payload: dict[str, Any], instructions: str) ->
 
 
 async def _generate_text(prompt: str) -> str:
-    """Call Gemini in a background thread and return the generated text."""
+    """Call Gemini in a background thread, walking the model chain on failure."""
 
-    logger.info("Calling Gemini model %s", MODEL_NAME)
+    _ensure_model()
 
-    try:
-        _ensure_model()
-        response = await asyncio.to_thread(_model.generate_content, prompt)
-        text = getattr(response, "text", None)
-        if not text:
-            raise ValueError("Gemini returned an empty response")
-        return text
-    except ValueError:
-        # Propagate missing-key error to caller for explicit handling in tests
-        raise
-    except Exception as exc:
-        logger.exception("Gemini call failed")
-        return f"Error calling Gemini: {exc}"
+    last_exc: Exception | None = None
+    seen: set[str] = set()
+    for name in _MODEL_CHAIN:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        logger.info("Calling Gemini model %s", name)
+        try:
+            model = _get_model(name)
+            response = await asyncio.to_thread(model.generate_content, prompt)
+            text = getattr(response, "text", None)
+            if text:
+                return text
+            last_exc = RuntimeError(f"Gemini model {name} returned an empty response")
+        except Exception as exc:  # quota, availability, network — try the next model
+            logger.warning("Gemini model %s failed: %s", name, exc)
+            last_exc = exc
+
+    logger.error("All Gemini models failed; falling back to deterministic analysis")
+    raise AIGenerationError(str(last_exc) if last_exc else "unknown Gemini failure")
+
+
+def _ensure_model() -> None:
+    """Backwards-compatible alias kept for tests; configures the SDK."""
+    _ensure_configured()
+
+
+def _grr_fallback_summary(data: dict[str, Any]) -> str:
+    """Deterministic AIAG-style GR&R interpretation used when Gemini is unavailable."""
+    grr = data.get("grr_percent")
+    ndc = data.get("ndc") or data.get("number_of_distinct_categories")
+    ev = data.get("repeatability")
+    av = data.get("reproducibility")
+
+    lines = ["**Automated statistical review** (AI commentary temporarily unavailable)", ""]
+
+    if isinstance(grr, (int, float)):
+        if grr < 10:
+            lines.append(
+                f"Total GR&R of {grr:.1f}% is **acceptable** (AIAG: below 10%). The measurement "
+                "system contributes a small share of variation and may be released for use."
+            )
+        elif grr <= 30:
+            lines.append(
+                f"Total GR&R of {grr:.1f}% is **conditional** (AIAG: 10–30%). Approve only for "
+                "non-critical characteristics; schedule improvement actions and re-study."
+            )
+        else:
+            lines.append(
+                f"Total GR&R of {grr:.1f}% is **unacceptable** (AIAG: above 30%). Do not use this "
+                "measurement system for product acceptance until it is repaired and re-qualified."
+            )
+
+    if isinstance(ev, (int, float)) and isinstance(av, (int, float)) and (ev or av):
+        if ev >= av:
+            lines.append(
+                f"Repeatability (EV {ev:.4g}) dominates reproducibility (AV {av:.4g}): focus on "
+                "the gauge — wear, fixturing rigidity, resolution, and measurement procedure."
+            )
+        else:
+            lines.append(
+                f"Reproducibility (AV {av:.4g}) dominates repeatability (EV {ev:.4g}): focus on "
+                "operator technique — alignment, handling, and training consistency."
+            )
+
+    if isinstance(ndc, (int, float)):
+        if ndc >= 5:
+            lines.append(
+                f"Number of distinct categories is {ndc:.0f} (≥ 5), adequate to distinguish parts."
+            )
+        else:
+            lines.append(
+                f"Number of distinct categories is {ndc:.0f}, below the minimum of 5 — the system "
+                "cannot reliably discriminate between parts at this variation level."
+            )
+
+    return "\n\n".join(lines)
 
 
 async def analyze_grr(measurement_data: dict[str, Any]) -> str:
@@ -86,13 +166,48 @@ ndc, acceptance implications, and practical recommendations.
 Return a concise but detailed manufacturing-quality explanation.
 """.strip(),
     )
-    return await _generate_text(prompt)
+    try:
+        return await _generate_text(prompt)
+    except AIGenerationError:
+        return _grr_fallback_summary(measurement_data)
 
 
 async def analyzeGRR(measurement_data: dict[str, Any]) -> str:
     """CamelCase alias for analyze_grr."""
 
     return await analyze_grr(measurement_data)
+
+
+def _spc_fallback_summary(data: dict[str, Any]) -> str:
+    """Deterministic SPC interpretation used when Gemini is unavailable."""
+    violations = data.get("violations") or data.get("violated_rules") or []
+    ucl = data.get("ucl")
+    lcl = data.get("lcl")
+    mean = data.get("mean") or data.get("cl")
+
+    lines = ["**Automated statistical review** (AI commentary temporarily unavailable)", ""]
+
+    count = len(violations) if isinstance(violations, (list, dict)) else 0
+    if count:
+        lines.append(
+            f"{count} control-rule violation{'s' if count != 1 else ''} detected. Treat these "
+            "points as potential special-cause variation: quarantine affected output, review "
+            "process inputs (tooling, material lot, setup) near the flagged samples, and document."
+        )
+    else:
+        lines.append(
+            "No control-rule violations detected in the submitted window. The process appears "
+            "statistically stable; continue monitoring at the current sampling cadence."
+        )
+
+    if (
+        isinstance(mean, (int, float))
+        and isinstance(ucl, (int, float))
+        and isinstance(lcl, (int, float))
+    ):
+        lines.append(f"Center line {mean:.4g} with control limits [{lcl:.4g}, {ucl:.4g}] (±3σ).")
+
+    return "\n\n".join(lines)
 
 
 async def analyze_spc_anomaly(chart_data: dict[str, Any]) -> str:
@@ -107,7 +222,10 @@ Nelson rule patterns, process drift, special causes, and suggested actions.
 Return a detailed explanation for a manufacturing quality engineer.
 """.strip(),
     )
-    return await _generate_text(prompt)
+    try:
+        return await _generate_text(prompt)
+    except AIGenerationError:
+        return _spc_fallback_summary(chart_data)
 
 
 async def analyzeSPCAnomaly(chart_data: dict[str, Any]) -> str:
@@ -128,7 +246,14 @@ trend observations, risks, and recommended next steps.
 Structure the response clearly and make it suitable for a quality review.
 """.strip(),
     )
-    return await _generate_text(prompt)
+    try:
+        return await _generate_text(prompt)
+    except AIGenerationError:
+        return (
+            "**Automated summary** (AI commentary temporarily unavailable)\n\n"
+            "Statistical results in this report were computed and validated locally. "
+            "Narrative interpretation could not be generated — retry later for the full AI review."
+        )
 
 
 async def generateQualityReport(all_data: dict[str, Any]) -> str:

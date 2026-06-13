@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { resolveApiBaseUrl } from "@/api/apiClient";
+import { resolveApiBaseUrl, resolveApiKey } from "@/api/apiClient";
 
 export interface RealtimeEvent {
   type: string;
@@ -19,17 +19,53 @@ export interface UseRealtimeStreamOptions {
   enabled?: boolean;
   heartbeatMs?: number;
   maxBackoffMs?: number;
+  /** Interval for the HTTP polling fallback when a WebSocket is unavailable. */
+  pollMs?: number;
   onEvent: (event: RealtimeEvent) => void;
   onOpen?: () => void;
   onClose?: () => void;
   onError?: (error: Event) => void;
 }
 
-function buildWebSocketUrl(path: string) {
+/** Emitted by the polling fallback so consumers can refetch on a steady cadence. */
+export const POLL_EVENT_TYPE = "poll.tick";
+
+const WS_FAILURES_BEFORE_FALLBACK = 3;
+
+function resolveWsEnvUrl(): string | undefined {
+  return typeof globalThis !== "undefined"
+    ? (globalThis as typeof globalThis & {
+        process?: { env?: { NEXT_PUBLIC_WS_URL?: string } };
+      }).process?.env?.NEXT_PUBLIC_WS_URL
+    : undefined;
+}
+
+/**
+ * Build the authenticated WebSocket URL.
+ * Returns null when no direct API origin is known (e.g. the REST layer is on
+ * the same-origin /api/backend proxy, which cannot carry WebSocket upgrades).
+ */
+function buildWebSocketUrl(path: string): string | null {
+  const wsEnv = resolveWsEnvUrl();
   const baseUrl = resolveApiBaseUrl();
-  const url = new URL(baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+
+  let url: URL | null = null;
+  if (wsEnv) {
+    url = new URL(wsEnv);
+  } else if (/^https?:\/\//i.test(baseUrl)) {
+    url = new URL(baseUrl);
+  } else {
+    return null;
+  }
+
+  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
   url.pathname = path;
+
+  const token = resolveApiKey();
+  if (token) {
+    url.searchParams.set("token", token);
+  }
+
   return url.toString();
 }
 
@@ -54,13 +90,17 @@ export function useRealtimeStream(options: UseRealtimeStreamOptions) {
     const path = options.path || "/api/v1/ws/measurements";
     const heartbeatMs = options.heartbeatMs ?? 25000;
     const maxBackoffMs = options.maxBackoffMs ?? 5000;
+    const pollMs = options.pollMs ?? 15000;
     const backoffBaseMs = 500;
 
     let socket: WebSocket | null = null;
     let heartbeatTimer: number | null = null;
     let reconnectTimer: number | null = null;
+    let pollTimer: number | null = null;
     let cancelled = false;
     let backoffMs = backoffBaseMs;
+    let consecutiveFailures = 0;
+    let everConnected = false;
 
     const clearTimers = () => {
       if (heartbeatTimer !== null) {
@@ -73,8 +113,22 @@ export function useRealtimeStream(options: UseRealtimeStreamOptions) {
       }
     };
 
+    const startPolling = () => {
+      if (cancelled || pollTimer !== null) {
+        return;
+      }
+      pollTimer = window.setInterval(() => {
+        onEventRef.current({ type: POLL_EVENT_TYPE, timestamp: new Date().toISOString() });
+      }, pollMs);
+    };
+
     const scheduleReconnect = () => {
       if (cancelled) {
+        return;
+      }
+      if (!everConnected && consecutiveFailures >= WS_FAILURES_BEFORE_FALLBACK) {
+        // The socket endpoint is unreachable from this network — degrade to polling.
+        startPolling();
         return;
       }
       reconnectTimer = window.setTimeout(() => {
@@ -88,8 +142,23 @@ export function useRealtimeStream(options: UseRealtimeStreamOptions) {
         return;
       }
 
-      socket = new WebSocket(buildWebSocketUrl(path));
+      const wsUrl = buildWebSocketUrl(path);
+      if (!wsUrl) {
+        // REST runs through the same-origin proxy; no WS origin configured.
+        startPolling();
+        return;
+      }
+
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        consecutiveFailures += 1;
+        scheduleReconnect();
+        return;
+      }
       socket.onopen = () => {
+        everConnected = true;
+        consecutiveFailures = 0;
         backoffMs = backoffBaseMs;
         onOpenRef.current?.();
         clearTimers();
@@ -112,6 +181,7 @@ export function useRealtimeStream(options: UseRealtimeStreamOptions) {
       };
       socket.onclose = () => {
         clearTimers();
+        consecutiveFailures += 1;
         onCloseRef.current?.();
         scheduleReconnect();
       };
@@ -122,10 +192,14 @@ export function useRealtimeStream(options: UseRealtimeStreamOptions) {
     return () => {
       cancelled = true;
       clearTimers();
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.close();
       }
       socket = null;
     };
-  }, [options.enabled, options.heartbeatMs, options.maxBackoffMs, options.path]);
+  }, [options.enabled, options.heartbeatMs, options.maxBackoffMs, options.path, options.pollMs]);
 }

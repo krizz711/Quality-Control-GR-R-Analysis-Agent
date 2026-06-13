@@ -140,13 +140,24 @@ async def _broadcast_worker() -> None:
 async def _redis_listener() -> None:
     backoff = 1.0
     while True:
+        redis = None
         try:
-            redis = Redis.from_url(settings.redis_url, decode_responses=True)
+            # health_check_interval keeps the idle pub/sub socket alive; we poll
+            # with get_message(timeout=...) so an idle channel returns None
+            # instead of raising a socket read TimeoutError.
+            redis = Redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                health_check_interval=30,
+            )
             pubsub = redis.pubsub()
             await pubsub.subscribe(REALTIME_CHANNEL, REALTIME_DLQ_CHANNEL)
             backoff = 1.0
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
+            while True:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=5.0
+                )
+                if message is None:
                     continue
                 data = message.get("data")
                 if not data:
@@ -157,10 +168,19 @@ async def _redis_listener() -> None:
                     logger.exception("Failed to decode realtime event")
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("Realtime Redis listener unavailable; retrying in %.1fs", backoff)
+        except Exception as exc:
+            logger.warning(
+                "Realtime Redis listener unavailable (%s: %s); retrying in %.1fs",
+                type(exc).__name__,
+                exc,
+                backoff,
+            )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 5.0)
+        finally:
+            if redis is not None:
+                with suppress(Exception):
+                    await redis.aclose()
 
 
 async def start_realtime_runtime() -> None:

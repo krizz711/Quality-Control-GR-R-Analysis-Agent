@@ -17,9 +17,10 @@ import {
 } from "lucide-react";
 import { getAlerts, recordAlertFeedback, resolveAlert, showToast, type AlertItem } from "@/api/apiClient";
 import { useRealtimeStream } from "@/api/realtime";
+import { parseApiDate } from "@/lib/utils";
 
 function formatTimeAgo(dateString: string) {
-  const date = new Date(dateString);
+  const date = parseApiDate(dateString);
   const diff = Date.now() - date.getTime();
   const mins = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
@@ -33,7 +34,7 @@ function formatTimeAgo(dateString: string) {
 
 function isToday(dateString: string | null | undefined) {
   if (!dateString) return false;
-  const date = new Date(dateString);
+  const date = parseApiDate(dateString);
   const today = new Date();
   return date.getDate() === today.getDate() &&
     date.getMonth() === today.getMonth() &&
@@ -41,24 +42,68 @@ function isToday(dateString: string | null | undefined) {
 }
 
 function AlertIcon({ type }: { type: string }) {
-  if (type === "grr_fail") return <AlertTriangle size={18} className="text-amber-500" />;
-  if (type === "spc_violation") return <Activity size={18} className="text-rose-500" />;
-  if (type === "trend_detected") return <TrendingUp size={18} className="text-sky-500" />;
-  return <Info size={18} className="text-slate-500" />;
+  if (type === "grr_fail") return <AlertTriangle size={18} style={{ color: "var(--warning)" }} />;
+  if (type === "spc_violation") return <Activity size={18} style={{ color: "var(--critical-text)" }} />;
+  if (type === "trend_detected") return <TrendingUp size={18} style={{ color: "var(--accent-bright)" }} />;
+  return <Info size={18} style={{ color: "var(--text-muted)" }} />;
 }
 
 function SeverityBadge({ severity }: { severity: string }) {
-  const colors: Record<string, string> = {
-    critical: "bg-rose-500/10 text-rose-400 border-rose-500/20",
-    high: "bg-orange-500/10 text-orange-400 border-orange-500/20",
-    medium: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-    low: "bg-sky-500/10 text-sky-400 border-sky-500/20",
+  const classes: Record<string, string> = {
+    critical: "badge-critical",
+    high: "badge-warning",
+    medium: "badge-warning",
+    low: "badge-info",
   };
-  const color = colors[severity.toLowerCase()] || "bg-slate-500/10 text-slate-400 border-slate-500/20";
+  return <span className={`badge ${classes[severity.toLowerCase()] || "badge-neutral"}`}>{severity}</span>;
+}
+
+function FilterGroup<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly T[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${color}`}>
-      {severity}
-    </span>
+    <div
+      className="flex rounded-lg border p-0.5"
+      style={{ borderColor: "var(--border-default)", background: "rgba(9,13,20,0.6)" }}
+    >
+      {options.map((option) => (
+        <button
+          key={option}
+          onClick={() => onChange(option)}
+          className="cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold capitalize transition-all duration-150"
+          style={
+            value === option
+              ? {
+                  background: "var(--bg-active)",
+                  color: "var(--text-primary)",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 3px rgba(2,6,18,0.5)",
+                }
+              : { color: "var(--text-muted)" }
+          }
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function HeaderStat({ value, label, tone }: { value: number; label: string; tone: string }) {
+  return (
+    <div className="panel-inset flex min-w-[92px] flex-col items-center justify-center px-4 py-2.5">
+      <span className="stat-number text-xl" style={{ color: tone }}>
+        {value}
+      </span>
+      <span className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.14em]" style={{ color: "var(--text-muted)" }}>
+        {label}
+      </span>
+    </div>
   );
 }
 
@@ -74,7 +119,8 @@ export default function AlertsPage() {
   const fetchAlerts = async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const res = await getAlerts({ limit: 100 });
+      // The API caps the page size at 50.
+      const res = await getAlerts({ limit: 50 });
       setAlerts(res.items);
     } catch (e) {
       console.error(e);
@@ -91,7 +137,7 @@ export default function AlertsPage() {
   useRealtimeStream({
     onEvent: (event) => {
       const eventType = String(event.type || "");
-      if (eventType === "alert.created" || eventType === "dlq.fallback") {
+      if (eventType === "alert.created" || eventType === "dlq.fallback" || eventType === "poll.tick") {
         void fetchAlerts(true);
         if (soundEnabled && eventType === "alert.created" && typeof event.message === "string") {
           showToast(`New Alert: ${event.message}`);
@@ -145,92 +191,77 @@ export default function AlertsPage() {
   }, [alerts]);
 
   return (
-    <div className="min-h-full bg-slate-950 px-4 py-6 text-slate-100 md:px-6">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6">
-        
+    <div className="h-full overflow-y-auto px-4 py-6 md:px-6" style={{ color: "var(--text-primary)" }}>
+      <div className="mx-auto flex max-w-6xl flex-col gap-5">
+
         {/* Header & Stats Bar */}
-        <header className="rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-5 shadow-lg">
+        <header className="surface-card edge-glow px-6 py-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-rose-500/20 bg-rose-500/10 text-rose-400">
+              <div className="flex items-center gap-4">
+                <div
+                  className="flex h-11 w-11 items-center justify-center rounded-xl border"
+                  style={{
+                    borderColor: "rgba(239,68,68,0.22)",
+                    background: "var(--critical-bg)",
+                    color: "var(--critical-text)",
+                    boxShadow: "0 0 24px -6px rgba(239,68,68,0.45), inset 0 1px 0 rgba(255,255,255,0.06)",
+                  }}
+                >
                   <AlertTriangle size={20} />
                 </div>
                 <div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
-                    Alerts Management
-                  </h1>
-                  <p className="mt-1 text-sm text-slate-400">
-                    Monitor quality violations and system notifications.
+                  <h1 className="page-title md:text-[26px]">Alert Inbox</h1>
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    Proactive quality alerting — violations, trends, and escalations in one queue.
                   </p>
                 </div>
               </div>
             </div>
-            
-            <div className="flex items-center gap-4 text-sm">
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
-                <span className="text-xl font-bold text-amber-400">{stats.active}</span>
-                <span className="text-xs uppercase tracking-wider text-slate-500">Active</span>
-              </div>
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
-                <span className="text-xl font-bold text-rose-400">{stats.critical}</span>
-                <span className="text-xs uppercase tracking-wider text-slate-500">Critical</span>
-              </div>
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-2">
-                <span className="text-xl font-bold text-emerald-400">{stats.resolvedToday}</span>
-                <span className="text-xs uppercase tracking-wider text-slate-500">Resolved Today</span>
-              </div>
+
+            <div className="flex items-center gap-3 text-sm">
+              <HeaderStat value={stats.active} label="Active" tone="var(--warning-text)" />
+              <HeaderStat value={stats.critical} label="Critical" tone="var(--critical-text)" />
+              <HeaderStat value={stats.resolvedToday} label="Resolved Today" tone="var(--success-text)" />
             </div>
           </div>
         </header>
 
         {/* Filters */}
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
-              {(["all", "active", "resolved"] as const).map(s => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-colors ${statusFilter === s ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-            
-            <div className="h-6 w-px bg-slate-700 hidden sm:block"></div>
+        <div className="surface-card flex flex-wrap items-center justify-between gap-4 px-5 py-3.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <FilterGroup
+              options={["all", "active", "resolved"] as const}
+              value={statusFilter}
+              onChange={(v) => setStatusFilter(v)}
+            />
 
-            <div className="flex rounded-lg border border-slate-700 bg-slate-950/50 p-1">
-              {(["all", "critical", "high", "medium", "low"] as const).map(sev => (
-                <button
-                  key={sev}
-                  onClick={() => setSeverityFilter(sev)}
-                  className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-colors ${severityFilter === sev ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                >
-                  {sev}
-                </button>
-              ))}
-            </div>
+            <div className="hidden h-6 w-px sm:block" style={{ background: "var(--border-strong)" }} />
+
+            <FilterGroup
+              options={["all", "critical", "high", "medium", "low"] as const}
+              value={severityFilter}
+              onChange={(v) => setSeverityFilter(v)}
+            />
           </div>
 
           <div className="flex items-center gap-3">
             <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }} />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search alerts..."
-                className="w-full sm:w-48 rounded-xl border border-slate-700 bg-slate-950/70 py-2 pl-9 pr-4 text-xs text-slate-100 outline-none focus:border-slate-500"
+                placeholder="Search alerts…"
+                className="input-field w-full py-2 pl-8 pr-4 text-xs sm:w-52"
               />
             </div>
             <button
               onClick={() => setSoundEnabled(!soundEnabled)}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              className="btn-icon h-9 w-9 shrink-0 cursor-pointer"
               title={soundEnabled ? "Mute Notifications" : "Unmute Notifications"}
             >
-              {soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+              {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
             </button>
           </div>
         </div>
@@ -238,71 +269,71 @@ export default function AlertsPage() {
         {/* Alert List */}
         <div className="grid gap-3">
           {loading && alerts.length === 0 ? (
-            <div className="py-12 text-center text-slate-500 flex flex-col items-center">
-              <Loader2 size={24} className="animate-spin mb-2" />
-              Loading alerts...
+            <div className="flex flex-col items-center py-12 text-center" style={{ color: "var(--text-muted)" }}>
+              <Loader2 size={24} className="mb-2 animate-spin" />
+              Loading alerts…
             </div>
           ) : filteredAlerts.length === 0 ? (
-            <div className="py-12 text-center text-slate-500 bg-slate-900/50 rounded-2xl border border-dashed border-slate-800">
+            <div
+              className="rounded-xl border border-dashed py-12 text-center"
+              style={{ borderColor: "var(--border-strong)", background: "rgba(9,13,20,0.5)", color: "var(--text-muted)" }}
+            >
               No alerts found matching the current filters.
             </div>
           ) : (
             filteredAlerts.map(alert => (
               <div
                 key={alert.id}
-                className="group flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 transition-colors hover:border-slate-700 hover:bg-slate-800/80"
+                className="surface-card group flex flex-col justify-between gap-4 p-4 sm:flex-row sm:items-center"
+                style={
+                  alert.status === "active" && alert.severity === "critical"
+                    ? { boxShadow: "inset 2.5px 0 0 var(--critical), var(--shadow-sm)" }
+                    : alert.status === "active" && alert.severity === "high"
+                      ? { boxShadow: "inset 2.5px 0 0 var(--warning), var(--shadow-sm)" }
+                      : undefined
+                }
               >
                 <div className="flex items-start gap-4">
                   <div className="mt-1">
                     <AlertIcon type={alert.type} />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="mb-1.5 flex flex-wrap items-center gap-2">
                       <SeverityBadge severity={alert.severity} />
-                      <span className="text-xs font-medium text-slate-400">
+                      <span className="font-mono text-[10.5px] uppercase tracking-[0.1em]" style={{ color: "var(--text-muted)" }}>
                         {alert.process_name}
                       </span>
                       {alert.status === "resolved" && (
-                        <span className="text-[10px] uppercase tracking-widest text-emerald-500 font-bold border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                          Resolved
-                        </span>
+                        <span className="badge badge-success">Resolved</span>
                       )}
                     </div>
-                    <div className="text-sm font-medium text-slate-200 line-clamp-2 leading-relaxed max-w-2xl">
+                    <div className="line-clamp-2 max-w-2xl text-sm font-medium leading-relaxed" style={{ color: "var(--text-primary)" }}>
                       {alert.message}
                     </div>
-                    <div className="flex items-center gap-1.5 mt-2 text-[11px] text-slate-500">
-                      <Clock size={12} />
+                    <div className="mt-2 flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                      <Clock size={11} />
                       <span>{formatTimeAgo(alert.created_at)}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0 sm:ml-auto">
+                <div className="flex shrink-0 flex-wrap items-center gap-2 sm:ml-auto">
                   {alert.status === "active" && (
-                    <button
-                      onClick={(e) => handleResolve(alert.id, e)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 transition hover:bg-emerald-500/20"
-                    >
-                      <CheckCircle2 size={14} /> Resolve
+                    <button onClick={(e) => handleResolve(alert.id, e)} className="btn btn-success h-8 cursor-pointer px-3 text-xs">
+                      <CheckCircle2 size={13} /> Resolve
                     </button>
                   )}
-                  <button
-                    onClick={() => setSelectedAlert(alert)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-slate-700"
-                  >
-                    <Info size={14} /> View Details
+                  <button onClick={() => setSelectedAlert(alert)} className="btn btn-secondary h-8 cursor-pointer px-3 text-xs">
+                    <Info size={13} /> Details
                   </button>
                   <button
                     onClick={() => void handleFeedback(alert, true)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
+                    className="btn h-8 cursor-pointer px-3 text-xs"
+                    style={{ background: "var(--info-bg)", borderColor: "rgba(78,140,255,0.3)", color: "var(--info-text)" }}
                   >
                     Relevant
                   </button>
-                  <button
-                    onClick={() => void handleFeedback(alert, false)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
-                  >
+                  <button onClick={() => void handleFeedback(alert, false)} className="btn btn-danger h-8 cursor-pointer px-3 text-xs">
                     False Positive
                   </button>
                 </div>
@@ -314,96 +345,114 @@ export default function AlertsPage() {
 
       {/* Detail Modal */}
       {selectedAlert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-3xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col max-h-[90vh]">
-            <div className="flex items-center justify-between border-b border-slate-800 p-5">
-              <h2 className="text-lg font-semibold text-slate-100 flex items-center gap-2">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(2,5,12,0.72)", backdropFilter: "blur(6px)" }}
+          onClick={() => setSelectedAlert(null)}
+        >
+          <div
+            className="glass-overlay flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b p-5" style={{ borderColor: "var(--border-subtle)" }}>
+              <h2 className="text-display flex items-center gap-2.5 text-lg font-semibold" style={{ color: "var(--text-primary)" }}>
                 <AlertIcon type={selectedAlert.type} /> Alert Details
               </h2>
-              <button
-                onClick={() => setSelectedAlert(null)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
-              >
-                <X size={18} />
+              <button onClick={() => setSelectedAlert(null)} className="btn-icon h-8 w-8 cursor-pointer" aria-label="Close details">
+                <X size={16} />
               </button>
             </div>
-            
-            <div className="overflow-y-auto p-5 space-y-6">
+
+            <div className="space-y-6 overflow-y-auto p-5">
               <div className="flex gap-2">
                 <SeverityBadge severity={selectedAlert.severity} />
-                <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wider border ${selectedAlert.status === 'resolved' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                <span className={`badge ${selectedAlert.status === "resolved" ? "badge-success" : "badge-warning"}`}>
                   {selectedAlert.status}
                 </span>
               </div>
 
               <div>
-                <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Process</div>
-                <div className="text-base font-semibold text-slate-200">{selectedAlert.process_name}</div>
+                <div className="section-label mb-1 text-[10px]">Process</div>
+                <div className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
+                  {selectedAlert.process_name}
+                </div>
               </div>
 
               <div>
-                <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Message</div>
-                <div className="text-sm leading-relaxed text-slate-300 bg-slate-950/50 p-4 rounded-xl border border-slate-800">
+                <div className="section-label mb-1.5 text-[10px]">Message</div>
+                <div className="panel-inset p-4 text-sm leading-relaxed" style={{ color: "var(--text-secondary)" }}>
                   {selectedAlert.message}
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Created</div>
-                  <div className="text-sm text-slate-300 flex items-center gap-1.5">
-                    <Clock size={14} className="text-slate-500" />
-                    {new Date(selectedAlert.created_at).toLocaleString()}
+                  <div className="section-label mb-1 text-[10px]">Created</div>
+                  <div className="flex items-center gap-1.5 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    <Clock size={13} style={{ color: "var(--text-muted)" }} />
+                    {parseApiDate(selectedAlert.created_at).toLocaleString()}
                   </div>
                 </div>
                 {selectedAlert.resolved_at && (
                   <div>
-                    <div className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Resolved</div>
-                    <div className="text-sm text-slate-300 flex items-center gap-1.5">
-                      <CheckCircle2 size={14} className="text-emerald-500" />
-                      {new Date(selectedAlert.resolved_at).toLocaleString()}
+                    <div className="section-label mb-1 text-[10px]">Resolved</div>
+                    <div className="flex items-center gap-1.5 text-sm" style={{ color: "var(--text-secondary)" }}>
+                      <CheckCircle2 size={13} style={{ color: "var(--success)" }} />
+                      {parseApiDate(selectedAlert.resolved_at).toLocaleString()}
                     </div>
                   </div>
                 )}
               </div>
 
               <div>
-                <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-widest mb-2">
-                  <Sparkles size={14} className="text-indigo-400" /> AI Analysis
+                <div className="section-label mb-2 flex items-center gap-2 text-[10px]">
+                  <Sparkles size={13} style={{ color: "var(--accent-ai-bright)" }} /> AI Analysis
                 </div>
-                <div className="text-sm leading-relaxed text-slate-300 bg-indigo-500/5 p-4 rounded-xl border border-indigo-500/10">
-                  This alert was triggered by the automated monitoring system based on the severity and specific rules configured for <code className="text-indigo-300 bg-indigo-500/10 px-1 rounded">{selectedAlert.process_name}</code>. 
-                  <br /><br />
-                  <strong>Recommendation:</strong> Investigate the root cause immediately to ensure quality standards are met. If this is a recurring issue, consider adjusting the process control limits or retraining operators.
+                <div
+                  className="rounded-xl border p-4 text-sm leading-relaxed"
+                  style={{
+                    borderColor: "rgba(139,92,246,0.18)",
+                    background: "linear-gradient(180deg, rgba(139,92,246,0.07), rgba(139,92,246,0.02))",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  This alert was triggered by the automated monitoring system based on the severity and specific rules configured for{" "}
+                  <code
+                    className="rounded px-1 font-mono text-[12px]"
+                    style={{ color: "var(--accent-ai-bright)", background: "var(--accent-ai-bg)" }}
+                  >
+                    {selectedAlert.process_name}
+                  </code>
+                  .
+                  <br />
+                  <br />
+                  <strong style={{ color: "var(--text-primary)" }}>Recommendation:</strong> Investigate the root cause immediately to
+                  ensure quality standards are met. If this is a recurring issue, consider adjusting the process control limits or
+                  retraining operators.
                 </div>
               </div>
             </div>
 
-            <div className="border-t border-slate-800 p-4 flex justify-end gap-3 bg-slate-900/50 rounded-b-3xl">
-              <button
-                onClick={() => setSelectedAlert(null)}
-                className="px-4 py-2 text-sm font-medium text-slate-300 hover:text-slate-100"
-              >
+            <div
+              className="flex flex-wrap justify-end gap-2.5 rounded-b-2xl border-t p-4"
+              style={{ borderColor: "var(--border-subtle)", background: "rgba(9,13,20,0.6)" }}
+            >
+              <button onClick={() => setSelectedAlert(null)} className="btn btn-ghost cursor-pointer">
                 Close
               </button>
               {selectedAlert.status === "active" && (
-                <button
-                  onClick={(e) => handleResolve(selectedAlert.id, e)}
-                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
-                >
-                  <CheckCircle2 size={16} /> Resolve Alert
+                <button onClick={(e) => handleResolve(selectedAlert.id, e)} className="btn btn-success cursor-pointer">
+                  <CheckCircle2 size={15} /> Resolve Alert
                 </button>
               )}
               <button
                 onClick={() => void handleFeedback(selectedAlert, true)}
-                className="inline-flex items-center gap-2 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20"
+                className="btn cursor-pointer"
+                style={{ background: "var(--info-bg)", borderColor: "rgba(78,140,255,0.3)", color: "var(--info-text)" }}
               >
                 Relevant
               </button>
-              <button
-                onClick={() => void handleFeedback(selectedAlert, false)}
-                className="inline-flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-300 transition hover:bg-rose-500/20"
-              >
+              <button onClick={() => void handleFeedback(selectedAlert, false)} className="btn btn-danger cursor-pointer">
                 False Positive
               </button>
             </div>

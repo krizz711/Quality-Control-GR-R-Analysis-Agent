@@ -7,6 +7,7 @@ import { Loader2, RefreshCw, Sparkles, TriangleAlert, X, Check } from "lucide-re
 import { decideReview, getReviews, showToast, type ReviewQueueItem } from "@/api/apiClient";
 import { Card, MetricPill } from "@/components/ui/kit";
 import { toast } from "@/components/ui/fx";
+import { parseApiDate } from "@/lib/utils";
 
 function grrColor(g: number | null | undefined) {
   if (g == null) return "var(--text-secondary)";
@@ -20,7 +21,7 @@ function ndcBadge(n: number | null | undefined) {
 
 function shortDate(value?: string | null) {
   if (!value) return "—";
-  const d = new Date(value);
+  const d = parseApiDate(value);
   if (Number.isNaN(d.getTime())) return value;
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }

@@ -39,6 +39,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
+> **Deploying?** See [DEPLOYMENT.md](DEPLOYMENT.md) for the full production guide:
+> single-VPS + TLS, managed-cloud options (Render/Railway/Fly/AWS/GCP), secret
+> rotation, and the pre-go-live hardening checklist.
+
 Services:
 
 | Service | URL |

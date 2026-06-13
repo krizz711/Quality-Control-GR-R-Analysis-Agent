@@ -41,6 +41,7 @@ import {
   type GRRHistoryItem,
 } from "@/api/apiClient";
 import { useRealtimeStream } from "@/api/realtime";
+import { parseApiDate } from "@/lib/utils";
 
 type DashboardPayload = {
   summary: DashboardSummaryResponse;
@@ -85,7 +86,7 @@ const cardVariants = {
 
 function formatTimestamp(value?: string | null) {
   if (!value) return "—";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -97,7 +98,7 @@ function formatTimestamp(value?: string | null) {
 
 function formatShortDate(value?: string | null) {
   if (!value) return "";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return "";
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
 }
@@ -128,7 +129,7 @@ function getSeverityTone(severity?: AlertItem["severity"]) {
 }
 
 function isWithinDays(timestamp: string, days: number, referenceTime: number) {
-  const date = new Date(timestamp);
+  const date = parseApiDate(timestamp);
   if (Number.isNaN(date.getTime())) return false;
   return referenceTime - date.getTime() <= days * 24 * 60 * 60 * 1000;
 }
@@ -195,7 +196,7 @@ export default function DashboardPage() {
   useRealtimeStream({
     onEvent: (event) => {
       const t = String(event.type || "");
-      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event"].includes(t)) {
+      if (["measurement.processed", "spc.analysis", "grr.analysis", "alert.created", "mes.event", "qms.event", "poll.tick"].includes(t)) {
         void loadDashboard();
       }
     },
@@ -220,7 +221,7 @@ export default function DashboardPage() {
 
   const totalThisWeek = grrHistory.filter((item) => isWithinDays(item.timestamp, 7, now)).length;
   const totalPrevWeek = grrHistory.filter((item) => {
-    const age = now - new Date(item.timestamp).getTime();
+    const age = now - parseApiDate(item.timestamp).getTime();
     return age > 7 * 24 * 60 * 60 * 1000 && age <= 14 * 24 * 60 * 60 * 1000;
   }).length;
   const totalTrend = formatRelativeTrend(totalThisWeek, totalPrevWeek);
@@ -250,7 +251,7 @@ export default function DashboardPage() {
 
   if (hasInitialError) {
     return (
-      <div className="min-h-full bg-[var(--bg-root)] px-6 py-8 text-[var(--text-primary)]">
+      <div className="min-h-full px-6 py-8 text-[var(--text-primary)]">
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -275,7 +276,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-full bg-[var(--bg-root)] text-[var(--text-primary)]">
+    <div className="h-full overflow-y-auto text-[var(--text-primary)]">
       <div className="mx-auto flex min-h-full max-w-[1600px] flex-col gap-5 px-5 py-5 lg:px-8">
 
         {/* Header */}
@@ -283,25 +284,28 @@ export default function DashboardPage() {
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
-          className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-6 py-5 shadow-lg"
+          className="surface-card edge-glow px-6 py-5"
         >
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-start gap-4">
-              <div className="mt-0.5 flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--accent-bg-strong)] bg-[var(--accent-bg)] text-[var(--accent)]">
+              <div
+                className="mt-0.5 flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--accent-bg-strong)] bg-[var(--accent-bg)] text-[var(--accent-bright)]"
+                style={{ boxShadow: "0 0 24px -6px rgba(78,140,255,0.5), inset 0 1px 0 rgba(255,255,255,0.08)" }}
+              >
                 <Radar size={20} />
               </div>
               <div>
-                <div className="flex items-center gap-3">
-                  <h1 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)] md:text-3xl">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h1 className="text-display gradient-text text-2xl font-semibold md:text-[28px]">
                     Quality Control AI Agent
                   </h1>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--success-bg)] bg-[var(--success-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--success)]">
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(16,185,129,0.25)] bg-[var(--success-bg)] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--success-text)]">
                     <span className="live-dot h-1.5 w-1.5" />
                     Live
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  Industrial quality operations — GR&R, SPC, alerting, and audit visibility.
+                  Autonomous GR&R analysis · real-time SPC monitoring · proactive quality alerting
                 </p>
               </div>
             </div>
@@ -310,17 +314,17 @@ export default function DashboardPage() {
               {refreshing && (
                 <Loader2 size={14} className="animate-spin text-[var(--text-muted)]" />
               )}
-              <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] px-4 py-3">
-                <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-[var(--text-muted)]">
-                  <Clock3 size={12} /> Last updated
+              <div className="panel-inset px-4 py-2.5">
+                <div className="flex items-center gap-1.5 font-mono text-[9.5px] font-medium uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                  <Clock3 size={11} /> Last updated
                 </div>
-                <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                <div className="stat-number mt-0.5 text-sm text-[var(--text-primary)]">
                   {lastUpdated ? formatTimestamp(lastUpdated.toISOString()) : "Waiting…"}
                 </div>
               </div>
               <button
                 onClick={() => void loadDashboard()}
-                className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] transition hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                className="btn-icon h-10 w-10 cursor-pointer rounded-xl"
                 title="Refresh"
               >
                 <RefreshCw size={14} />
@@ -624,13 +628,13 @@ function Panel({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 28, delay: 0.15 }}
-      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5"
+      className="surface-card p-5"
     >
-      <div className="mb-4 flex items-center gap-2">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
+      <div className="mb-4 flex items-center gap-2.5">
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--accent-bright)]">
           {icon}
         </div>
-        <h2 className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text-secondary)]">{title}</h2>
+        <h2 className="section-label">{title}</h2>
       </div>
       {children}
     </motion.div>
@@ -659,28 +663,32 @@ function StatCard({
   return (
     <motion.div
       whileHover={{ y: -2, transition: { type: "spring", stiffness: 400, damping: 20 } }}
-      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5 transition-shadow hover:shadow-lg"
+      className="surface-card group p-5"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)]">{title}</p>
+          <p className="font-mono text-[9.5px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">{title}</p>
           {loading ? (
             <SkeletonBlock className="mt-3 h-9 w-28" />
           ) : (
-            <div className={`mt-3 text-3xl font-semibold tracking-tight tabular-nums ${tone}`}>{value}</div>
+            <div className={`stat-number mt-3 text-[30px] leading-none ${tone}`}>{value}</div>
           )}
         </div>
-        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${accent}`}>{icon}</div>
+        <div
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition-transform duration-200 group-hover:scale-110 ${accent}`}
+        >
+          {icon}
+        </div>
       </div>
-      <div className="mt-4 flex items-center justify-between gap-2">
+      <div className="mt-4 flex items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-3">
         <span className="text-xs text-[var(--text-muted)]">{detail}</span>
         {trend === "up" && (
-          <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--success)]">
+          <span className="inline-flex items-center gap-0.5 font-mono text-[11px] font-semibold text-[var(--success-text)]">
             <ArrowUpRight size={12} /> Up
           </span>
         )}
         {trend === "down" && (
-          <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--critical)]">
+          <span className="inline-flex items-center gap-0.5 font-mono text-[11px] font-semibold text-[var(--critical-text)]">
             <ArrowDownRight size={12} /> Down
           </span>
         )}

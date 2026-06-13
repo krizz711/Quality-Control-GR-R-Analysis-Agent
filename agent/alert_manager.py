@@ -116,7 +116,8 @@ class AlertManager:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(webhook_url, json=payload)
             r.raise_for_status()
-            return r.json()
+            # Slack incoming webhooks reply with plain-text "ok", not JSON.
+            return r.text
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),

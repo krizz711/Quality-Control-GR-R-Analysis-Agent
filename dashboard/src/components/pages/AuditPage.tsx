@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, FileText, Loader2, RefreshCw, Search } from "lucide-react";
 import { apiClient, getAuditLog, showToast, type AuditLogItem } from "@/api/apiClient";
+import { parseApiDate } from "@/lib/utils";
 
 function formatTimestamp(value: string) {
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }

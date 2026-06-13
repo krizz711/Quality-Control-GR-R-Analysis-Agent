@@ -27,7 +27,7 @@ import {
   type GRRAnalysisResponse,
   type GRRInputMeasurement,
 } from "@/api/apiClient";
-import { formatPercent, grrVerdict } from "@/lib/utils";
+import { grrVerdict } from "@/lib/utils";
 
 type Step = 1 | 2 | 3;
 
@@ -59,8 +59,7 @@ const defaultValues: GRRFormValues = {
   measurements: [],
 };
 
-const inputClass =
-  "w-full rounded-2xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-emerald-400/50 focus:ring-2 focus:ring-emerald-500/20";
+const inputClass = "input-field";
 
 function formatTimestamp(date: Date | string) {
   const value = typeof date === "string" ? new Date(date) : date;
@@ -191,9 +190,17 @@ function GaugeChart({ value }: { value: number }) {
 function StepBadge({ step, active }: { step: number; active: boolean }) {
   return (
     <div
-      className={`flex h-9 w-9 items-center justify-center rounded-full border text-sm font-semibold ${
-        active ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200" : "border-slate-700 bg-slate-900 text-slate-500"
-      }`}
+      className="flex h-9 w-9 items-center justify-center rounded-full border font-mono text-sm font-semibold transition-all duration-200"
+      style={
+        active
+          ? {
+              borderColor: "rgba(130,174,255,0.45)",
+              background: "var(--gradient-accent)",
+              color: "white",
+              boxShadow: "0 0 18px -4px rgba(78,140,255,0.7), inset 0 1px 0 rgba(255,255,255,0.25)",
+            }
+          : { borderColor: "var(--border-strong)", background: "var(--bg-elevated)", color: "var(--text-muted)" }
+      }
     >
       {step}
     </div>
@@ -302,6 +309,7 @@ export default function GRRPage() {
         value: row.value,
       })),
       part_tolerance: values.partTolerance,
+      process_name: values.processName || undefined,
     };
 
     setAnalysis({ result: null, loading: true, error: null });
@@ -374,32 +382,38 @@ export default function GRRPage() {
   };
 
   return (
-    <div className="min-h-full bg-slate-950 px-4 py-6 text-slate-100 md:px-6">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <header className="rounded-3xl border border-slate-800 bg-slate-900/95 px-6 py-5 shadow-[0_18px_55px_rgba(2,6,23,0.45)]">
+    <div className="h-full overflow-y-auto px-4 py-6 md:px-6" style={{ color: "var(--text-primary)" }}>
+      <div className="mx-auto flex max-w-7xl flex-col gap-5">
+        <header className="surface-card edge-glow px-6 py-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-300">
+              <div className="flex items-center gap-4">
+                <div
+                  className="flex h-11 w-11 items-center justify-center rounded-xl border"
+                  style={{
+                    borderColor: "var(--accent-bg-strong)",
+                    background: "var(--accent-bg)",
+                    color: "var(--accent-bright)",
+                    boxShadow: "0 0 24px -6px rgba(78,140,255,0.5), inset 0 1px 0 rgba(255,255,255,0.08)",
+                  }}
+                >
                   <Sparkles size={20} />
                 </div>
                 <div>
-                  <h1 className="text-2xl font-semibold tracking-tight text-slate-50 md:text-3xl">
-                    GR&R Analysis Form
-                  </h1>
-                  <p className="mt-1 text-sm text-slate-400">
-                    Three-step measurement system study with live calculations and backend analysis.
+                  <h1 className="page-title md:text-[26px]">GR&R Study Wizard</h1>
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-secondary)" }}>
+                    Three-step measurement system analysis with live calculations and AI review.
                   </p>
                 </div>
               </div>
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
-              <div className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Current status</div>
-              <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-emerald-300">
-                <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_0_6px_rgba(34,197,94,0.12)]" />
+            <div className="panel-inset px-4 py-3">
+              <div className="section-label text-[10px]">Current status</div>
+              <div className="mt-1.5 flex items-center gap-2.5 text-sm font-semibold" style={{ color: "var(--success-text)" }}>
+                <span className="live-dot" style={{ width: 7, height: 7 }} />
                 Ready for measurement entry
               </div>
-              <div className="mt-1 text-xs text-slate-500">
+              <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
                 {lastSavedAt ? `Last saved ${formatTimestamp(lastSavedAt)}` : "Analysis not yet run"}
               </div>
             </div>
@@ -409,24 +423,36 @@ export default function GRRPage() {
             {stepLabels.map((label, index) => (
               <div
                 key={label}
-                className={`flex items-center gap-3 rounded-2xl border px-4 py-3 ${
+                className="flex items-center gap-3 rounded-xl border px-4 py-3 transition-colors duration-200"
+                style={
                   step === index + 1
-                    ? "border-emerald-500/20 bg-emerald-500/10"
-                    : "border-slate-800 bg-slate-950/50"
-                }`}
+                    ? {
+                        borderColor: "rgba(78,140,255,0.28)",
+                        background: "linear-gradient(180deg, rgba(78,140,255,0.12), rgba(78,140,255,0.04))",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+                      }
+                    : { borderColor: "var(--border-subtle)", background: "rgba(9,13,20,0.5)" }
+                }
               >
                 <StepBadge step={index + 1} active={step === index + 1} />
                 <div>
-                  <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Step {index + 1}</div>
-                  <div className="text-sm font-semibold text-slate-100">{label}</div>
+                  <div className="font-mono text-[9.5px] uppercase tracking-[0.18em]" style={{ color: "var(--text-ghost)" }}>
+                    Step {index + 1}
+                  </div>
+                  <div
+                    className="text-sm font-semibold"
+                    style={{ color: step === index + 1 ? "var(--text-primary)" : "var(--text-secondary)" }}
+                  >
+                    {label}
+                  </div>
                 </div>
               </div>
             ))}
           </div>
         </header>
 
-        <form onSubmit={handleSubmit(runAnalysis)} className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-          <div className="space-y-6">
+        <form onSubmit={handleSubmit(runAnalysis)} className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,0.55fr)]">
+          <div className="min-w-0 space-y-6">
             <AnimatePresence mode="wait">
             {step === 1 && (
               <motion.section
@@ -435,7 +461,7 @@ export default function GRRPage() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]"
+                className="surface-card p-6"
               >
                 <SectionHeader
                   icon={<Wand2 size={16} />}
@@ -519,11 +545,11 @@ export default function GRRPage() {
                   <button
                     type="button"
                     onClick={() => void generateTable()}
-                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                    className="btn btn-primary"
                   >
                     <Table2 size={16} /> Generate Measurement Table
                   </button>
-                  <div className="text-xs text-slate-500">Defaults: 3 operators, 10 parts, 2 trials</div>
+                  <div className="text-xs text-[var(--text-muted)]">Defaults: 3 operators, 10 parts, 2 trials</div>
                 </div>
               </motion.section>
             )}
@@ -535,7 +561,7 @@ export default function GRRPage() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]"
+                className="surface-card p-6"
               >
                 <SectionHeader
                   icon={<FileUp size={16} />}
@@ -543,16 +569,16 @@ export default function GRRPage() {
                   description="Fill every measurement cell, import CSV data, and preview the grand mean live."
                 />
 
-                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
-                  <div className="text-sm text-slate-300">
-                    <span className="font-semibold text-slate-100">{processName || "Unnamed process"}</span>
-                    <span className="text-slate-500">
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3 panel-inset px-4 py-3">
+                  <div className="text-sm text-[var(--text-secondary)]">
+                    <span className="font-semibold text-[var(--text-primary)]">{processName || "Unnamed process"}</span>
+                    <span className="text-[var(--text-muted)]">
                       {" "}
                       · {operators} operators · {parts} parts · {trials} trials
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800">
+                    <label className="btn btn-secondary h-8 cursor-pointer px-3 text-xs">
                       {importing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                       Import CSV
                       <input
@@ -575,29 +601,29 @@ export default function GRRPage() {
                         if (valid) setStep(3);
                         else showToast("Please fill out all measurements before proceeding.");
                       }}
-                      className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+                      className="btn btn-secondary h-8 px-3 text-xs"
                     >
                       Review Analysis Step <ChevronRight size={14} />
                     </button>
                   </div>
                 </div>
 
-                <div className="mt-5 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                <div className="mt-5 panel-inset p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-xs uppercase tracking-[0.2em] text-slate-500">Grand Mean Preview</div>
-                      <div className="mt-1 text-2xl font-semibold text-slate-50">
+                      <div className="text-xs uppercase tracking-[0.2em] text-[var(--text-muted)]">Grand Mean Preview</div>
+                      <div className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">
                         {grandMean !== null ? grandMean.toFixed(4) : "—"}
                       </div>
                     </div>
-                    <div className="text-right text-xs text-slate-500">Live preview updates as values are entered</div>
+                    <div className="text-right text-xs text-[var(--text-muted)]">Live preview updates as values are entered</div>
                   </div>
                 </div>
 
-                <div className="mt-5 overflow-hidden rounded-2xl border border-slate-800">
+                <div className="mt-5 overflow-hidden rounded-xl border border-[var(--border-default)]">
                   <div className="max-h-[520px] overflow-auto">
                     <table className="min-w-full text-left text-sm">
-                      <thead className="sticky top-0 z-10 bg-slate-900 text-xs uppercase tracking-[0.18em] text-slate-500">
+                      <thead className="sticky top-0 z-10 bg-[var(--bg-elevated)] font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
                         <tr>
                           <th className="px-4 py-3 font-medium">Operator</th>
                           <th className="px-4 py-3 font-medium">Part #</th>
@@ -605,12 +631,12 @@ export default function GRRPage() {
                           <th className="px-4 py-3 font-medium">Measurement Value</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-800 bg-slate-950/30">
+                      <tbody className="divide-y divide-[rgba(148,163,184,0.07)]">
                         {fields.map((field, index) => (
-                          <tr key={field.id} className="transition hover:bg-slate-900/50">
-                            <td className="px-4 py-3 text-slate-300">{field.operator}</td>
-                            <td className="px-4 py-3 text-slate-300">{field.part}</td>
-                            <td className="px-4 py-3 text-slate-300">{field.trial}</td>
+                          <tr key={field.id} className="transition hover:bg-[var(--bg-hover)]">
+                            <td className="px-4 py-3 text-[var(--text-secondary)]">{field.operator}</td>
+                            <td className="px-4 py-3 text-[var(--text-secondary)]">{field.part}</td>
+                            <td className="px-4 py-3 text-[var(--text-secondary)]">{field.trial}</td>
                             <td className="px-4 py-3">
                               <input
                                 type="number"
@@ -620,7 +646,7 @@ export default function GRRPage() {
                                   required: "Measurement is required",
                                   validate: (v) => !Number.isNaN(v) || "Required",
                                 })}
-                                className={`${inputClass} ${errors.measurements?.[index]?.value ? "border-rose-500/50 bg-rose-500/10 focus:border-rose-400 focus:ring-rose-500/20" : ""}`}
+                                className={`${inputClass} stat-number ${errors.measurements?.[index]?.value ? "input-error" : ""}`}
                                 placeholder="Enter value"
                               />
                             </td>
@@ -628,7 +654,7 @@ export default function GRRPage() {
                         ))}
                         {!fields.length ? (
                           <tr>
-                            <td className="px-4 py-10 text-center text-slate-500" colSpan={4}>
+                            <td className="px-4 py-10 text-center text-[var(--text-muted)]" colSpan={4}>
                               Generate the measurement table to begin data entry.
                             </td>
                           </tr>
@@ -642,7 +668,7 @@ export default function GRRPage() {
                   <button
                     type="button"
                     onClick={() => setStep(1)}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+                    className="btn btn-secondary"
                   >
                     <ArrowLeft size={16} /> Back to Setup
                   </button>
@@ -653,7 +679,7 @@ export default function GRRPage() {
                       if (valid) setStep(3);
                       else showToast("Please fill out all measurements before proceeding.");
                     }}
-                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                    className="btn btn-primary"
                   >
                     Proceed to Analysis <ArrowRight size={16} />
                   </button>
@@ -668,7 +694,7 @@ export default function GRRPage() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                className="rounded-3xl border border-slate-800 bg-slate-900/95 p-6 shadow-[0_18px_55px_rgba(2,6,23,0.35)]"
+                className="surface-card p-6"
               >
                 <SectionHeader
                   icon={<Gauge size={16} />}
@@ -680,7 +706,7 @@ export default function GRRPage() {
                   <button
                     type="submit"
                     disabled={analysis.loading}
-                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-70"
+                    className="btn btn-primary"
                   >
                     {analysis.loading ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
                     Run GR&R Analysis
@@ -688,11 +714,11 @@ export default function GRRPage() {
                   <button
                     type="button"
                     onClick={() => setStep(2)}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-slate-600 hover:bg-slate-800"
+                    className="btn btn-secondary"
                   >
                     <ArrowLeft size={16} /> Back to Data Entry
                   </button>
-                  <div className="text-xs text-slate-500">POST /api/grr/analyze with {measurements?.length || 0} measurements</div>
+                  <div className="text-xs text-[var(--text-muted)]">POST /api/grr/analyze with {measurements?.length || 0} measurements</div>
                 </div>
 
                 {analysis.error && (
@@ -714,7 +740,7 @@ export default function GRRPage() {
                 )}
 
                 {analysis.loading && (
-                  <div className="mt-5 flex items-center gap-3 rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-4 text-sm text-slate-400">
+                  <div className="mt-5 flex items-center gap-3 panel-inset px-4 py-4 text-sm text-[var(--text-secondary)]">
                     <Loader2 size={16} className="animate-spin text-emerald-300" />
                     Running statistical analysis on the backend...
                   </div>
@@ -722,16 +748,16 @@ export default function GRRPage() {
 
                 {currentAnalysis && verdict && (
                   <div className="mt-6 grid gap-5 xl:grid-cols-[320px_1fr]">
-                    <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-5">
+                    <div className="panel-inset rounded-xl p-5">
                       <GaugeChart value={analysisPct} />
                       <div className="mt-4 flex items-center justify-center">
                         <span
-                          className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                          className={`badge h-7 px-3.5 ${
                             currentAnalysis.grr_percent < 10
-                              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                              ? "badge-success"
                               : currentAnalysis.grr_percent <= 30
-                                ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
-                                : "border-rose-500/20 bg-rose-500/10 text-rose-300"
+                                ? "badge-warning"
+                                : "badge-critical"
                           }`}
                         >
                           {verdict.label}
@@ -742,32 +768,32 @@ export default function GRRPage() {
                     <div className="space-y-4">
                       <div className="grid gap-3 md:grid-cols-3">
                         {[
-                          { label: "Repeatability %", value: formatPercent(currentAnalysis.repeatability), tone: "text-emerald-300" },
-                          { label: "Reproducibility %", value: formatPercent(currentAnalysis.reproducibility), tone: "text-amber-300" },
+                          { label: "Repeatability · EV σ", value: currentAnalysis.repeatability.toFixed(4), tone: "text-emerald-300" },
+                          { label: "Reproducibility · AV σ", value: currentAnalysis.reproducibility.toFixed(4), tone: "text-amber-300" },
                           { label: "Distinct Categories", value: String(currentAnalysis.number_of_distinct_categories), tone: "text-sky-300" },
                         ].map((metric) => (
-                          <div key={metric.label} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{metric.label}</div>
-                            <div className={`mt-2 text-2xl font-semibold ${metric.tone}`}>{metric.value}</div>
+                          <div key={metric.label} className="panel-inset p-4">
+                            <div className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-[var(--text-muted)]">{metric.label}</div>
+                            <div className={`stat-number mt-2 text-2xl ${metric.tone}`}>{metric.value}</div>
                           </div>
                         ))}
                       </div>
 
-                      <div className="rounded-3xl border border-slate-800 bg-slate-950/60 p-5">
+                      <div className="panel-inset rounded-xl p-5">
                         <div className="flex items-center justify-between gap-3">
-                          <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">AI Analysis</h3>
-                          <span className="text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                          <h3 className="section-label">AI Analysis</h3>
+                          <span className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
                             {formatTimestamp(currentAnalysis.timestamp)}
                           </span>
                         </div>
-                        <p className="mt-4 whitespace-pre-line text-sm leading-6 text-slate-300">{currentAnalysis.ai_analysis}</p>
+                        <p className="mt-4 whitespace-pre-line break-words text-sm leading-6 text-[var(--text-secondary)]">{currentAnalysis.ai_analysis}</p>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-3">
                         <button
                           type="button"
                           onClick={saveToHistory}
-                          className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800"
+                          className="btn btn-secondary"
                         >
                           <Save size={16} /> Save to History
                         </button>
@@ -775,7 +801,7 @@ export default function GRRPage() {
                           type="button"
                           onClick={() => void exportPdf()}
                           disabled={exportingPdf}
-                          className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-slate-600 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="btn btn-secondary"
                         >
                           {exportingPdf
                             ? <><Loader2 size={16} className="animate-spin" /> Generating…</>
@@ -784,7 +810,7 @@ export default function GRRPage() {
                         <button
                           type="button"
                           onClick={() => setStep(2)}
-                          className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+                          className="btn btn-primary"
                         >
                           <Plus size={16} /> Adjust Measurements
                         </button>
@@ -794,12 +820,16 @@ export default function GRRPage() {
                 )}
 
                 {!analysis.loading && !currentAnalysis && !analysis.error && (
-                  <div className="mt-6 rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 px-6 py-10 text-center">
-                    <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-700 bg-slate-900 text-slate-400">
-                      <Gauge size={18} />
-                    </div>
-                    <h3 className="mt-4 text-sm font-semibold text-slate-200">Ready to analyze</h3>
-                    <p className="mt-1 text-sm text-slate-500">Run the GR&R calculation after confirming the table data.</p>
+                  <div className="mt-6 overflow-hidden rounded-xl border border-dashed border-[var(--border-strong)] bg-[rgba(9,13,20,0.5)] px-6 py-8 text-center">
+                    <img
+                      src="/brand/gauge_square.png"
+                      alt="Precision measurement gauge"
+                      width={132}
+                      height={132}
+                      className="mx-auto h-[132px] w-[132px] object-contain opacity-95 [filter:drop-shadow(0_12px_28px_rgba(78,140,255,0.25))]"
+                    />
+                    <h3 className="mt-3 text-sm font-semibold text-[var(--text-primary)]">Ready to analyze</h3>
+                    <p className="mt-1 text-sm text-[var(--text-muted)]">Run the GR&R calculation after confirming the table data.</p>
                   </div>
                 )}
               </motion.section>
@@ -807,11 +837,11 @@ export default function GRRPage() {
             </AnimatePresence>
           </div>
 
-          <aside className="space-y-6">
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+          <aside className="min-w-0 space-y-6">
+            <div className="surface-card p-5">
               <div className="flex items-center gap-2">
-                <AlertCircle size={16} className="text-slate-300" />
-                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Study Summary</h2>
+                <AlertCircle size={16} className="text-[var(--text-secondary)]" />
+                <h2 className="section-label">Study Summary</h2>
               </div>
 
               <div className="mt-4 grid gap-3">
@@ -825,34 +855,34 @@ export default function GRRPage() {
                 ].map((item) => (
                   <div
                     key={item.label}
-                    className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm"
+                    className="flex items-center justify-between panel-inset px-4 py-3 text-sm"
                   >
-                    <span className="text-slate-500">{item.label}</span>
-                    <span className="font-semibold text-slate-100">{item.value}</span>
+                    <span className="text-[var(--text-muted)]">{item.label}</span>
+                    <span className="font-semibold text-[var(--text-primary)]">{item.value}</span>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/95 p-5 shadow-[0_18px_55px_rgba(2,6,23,0.35)]">
+            <div className="surface-card p-5">
               <div className="flex items-center gap-2">
-                <Table2 size={16} className="text-slate-300" />
-                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">Data Integrity</h2>
+                <Table2 size={16} className="text-[var(--text-secondary)]" />
+                <h2 className="section-label">Data Integrity</h2>
               </div>
 
-              <div className="mt-4 space-y-3 text-sm text-slate-300">
-                <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
-                  <span className="text-slate-500">Entered values</span>
-                  <span className="font-semibold text-slate-100">
+              <div className="mt-4 space-y-3 text-sm text-[var(--text-secondary)]">
+                <div className="flex items-center justify-between panel-inset px-4 py-3">
+                  <span className="text-[var(--text-muted)]">Entered values</span>
+                  <span className="font-semibold text-[var(--text-primary)]">
                     {measurements?.filter((row) => Number.isFinite(row.value)).length || 0}/{fields.length}
                   </span>
                 </div>
-                <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
-                  <span className="text-slate-500">Grand mean</span>
-                  <span className="font-semibold text-slate-100">{grandMean !== null ? grandMean.toFixed(4) : "—"}</span>
+                <div className="flex items-center justify-between panel-inset px-4 py-3">
+                  <span className="text-[var(--text-muted)]">Grand mean</span>
+                  <span className="font-semibold text-[var(--text-primary)]">{grandMean !== null ? grandMean.toFixed(4) : "—"}</span>
                 </div>
-                <div className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/60 px-4 py-3">
-                  <span className="text-slate-500">Analysis ready</span>
+                <div className="flex items-center justify-between panel-inset px-4 py-3">
+                  <span className="text-[var(--text-muted)]">Analysis ready</span>
                   <span className="font-semibold text-emerald-300">{tableReady ? "Yes" : "No"}</span>
                 </div>
               </div>
@@ -876,12 +906,12 @@ function SectionHeader({
   return (
     <div>
       <div className="flex items-center gap-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-950/70 text-slate-300">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] text-[var(--accent-bright)]">
           {icon}
         </div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">{title}</h2>
+        <h2 className="section-label">{title}</h2>
       </div>
-      <p className="mt-3 text-sm leading-6 text-slate-400">{description}</p>
+      <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{description}</p>
     </div>
   );
 }
@@ -902,8 +932,8 @@ function Field({
   return (
     <label className={`block ${className}`}>
       <div className="mb-2 flex items-center justify-between gap-2 text-sm">
-        <span className="font-medium text-slate-200">{label}</span>
-        {optional ? <span className="text-xs uppercase tracking-[0.18em] text-slate-500">Optional</span> : null}
+        <span className="font-medium text-[var(--text-primary)]">{label}</span>
+        {optional ? <span className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Optional</span> : null}
       </div>
       {children}
       {error ? <div className="mt-2 text-xs text-rose-300">{error}</div> : null}

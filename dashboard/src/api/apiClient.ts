@@ -26,6 +26,7 @@ export interface GRRInputMeasurement {
 export interface GRRInput {
   measurements: GRRInputMeasurement[];
   part_tolerance?: number;
+  process_name?: string;
 }
 
 export interface GRRAnalysisResponse {
@@ -52,6 +53,8 @@ export interface SPCInput {
   ucl?: number;
   lcl?: number;
   target?: number;
+  /** Values to persist as new rows; [] = stats-only recompute; omitted = persist all. */
+  new_values?: number[];
 }
 
 export interface SPCViolation {
@@ -177,7 +180,13 @@ export const resolveApiBaseUrl = () => {
         }).process?.env?.NEXT_PUBLIC_API_URL
       : undefined;
 
-  return storedUrl || viteUrl || nextUrl || "http://127.0.0.1:8000";
+  // In the browser, default to the same-origin Next.js proxy (/api/backend):
+  // the API key stays server-side and no CORS configuration is needed.
+  if (typeof window !== "undefined") {
+    return storedUrl || viteUrl || nextUrl || "/api/backend";
+  }
+
+  return viteUrl || nextUrl || "http://127.0.0.1:8000";
 };
 
 export const resolveApiKey = () => {

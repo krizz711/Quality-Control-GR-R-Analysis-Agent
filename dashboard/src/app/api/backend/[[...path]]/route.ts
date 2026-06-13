@@ -28,9 +28,10 @@ async function proxyRequest(
 
   const body = method === 'GET' || method === 'HEAD' ? undefined : await request.arrayBuffer();
 
-  // Add a timeout and error logging to help debug proxy issues
+  // Add a timeout and error logging to help debug proxy issues.
+  // Analysis endpoints can run long (statistics + AI narrative + alert dispatch).
   const controller = new AbortController();
-  const timeoutMs = 25000; // 25s
+  const timeoutMs = 90000; // 90s
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {

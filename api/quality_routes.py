@@ -144,6 +144,7 @@ class GRRAnalyzeRequest(BaseModel):
 
     measurements: list[GRRMeasurementInput] = Field(..., min_length=1)
     part_tolerance: float | None = Field(default=None, alias="partTolerance")
+    process_name: str | None = Field(default=None, alias="processName", max_length=200)
 
     @model_validator(mode="after")
     def validate_sample_sizes(self) -> "GRRAnalyzeRequest":
@@ -185,6 +186,11 @@ class SPCDataRequest(BaseModel):
     ucl: float | None = None
     lcl: float | None = None
     target: float | None = None
+    # When provided, only these values are persisted as new measurement rows;
+    # `measurements` is then treated as the analysis window. Pass [] to run a
+    # stats-only recompute without writing anything. Omitted → legacy behavior
+    # (every submitted value is persisted).
+    new_values: list[float] | None = None
 
     @model_validator(mode="after")
     def validate_measurements(self) -> "SPCDataRequest":
@@ -557,12 +563,14 @@ async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
         operators = {item.operator.strip() for item in body.measurements if item.operator.strip()}
         parts = {item.part for item in body.measurements}
 
+        process_label = (body.process_name or "").strip() or "GR&R Analysis"
+
         async with AsyncSessionLocal() as session:
             session.add(
                 GrrStudy(
                     id=study_id,
                     equipment_id=body.measurements[0].operator,
-                    characteristic_name="grr_analysis",
+                    characteristic_name=process_label if process_label != "GR&R Analysis" else "grr_analysis",
                     status=verdict.level.value,
                     ev=result.repeatability,
                     av=result.reproducibility,
@@ -583,9 +591,9 @@ async def _analyze_grr_impl(body: GRRAnalyzeRequest) -> GRRAnalyzeResponse:
                     severity="high",
                     message=(
                         f"GR&R study failed with {result.total_grr:.1f}% variation. "
-                        "Review the torque measurement system."
+                        f"Review the {process_label} measurement system."
                     ),
-                    process_name="GR&R Analysis",
+                    process_name=process_label,
                     payload={
                         "source": "api_grr_analyze",
                         "study_id": str(study_id),
@@ -721,8 +729,9 @@ async def _analyze_spc_data_impl(body: SPCDataRequest) -> SPCDataResponse:
         )
 
         timestamp = _now()
+        values_to_persist = values if body.new_values is None else [float(v) for v in body.new_values]
         async with AsyncSessionLocal() as session:
-            for value in values:
+            for value in values_to_persist:
                 session.add(
                     Measurement(
                         timestamp=timestamp,
@@ -1277,7 +1286,7 @@ async def export_audit_log_csv(
     format: Literal["csv", "json"] = Query(default="csv"),
 ):
     """Export audit log in compliance-ready format (CSV or JSON)."""
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     import io
     import csv
 

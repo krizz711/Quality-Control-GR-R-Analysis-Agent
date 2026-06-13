@@ -114,8 +114,19 @@ function MarkdownText({ content }: { content: string }) {
   );
 }
 
+const ALLOW_MOCK =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_ALLOW_MOCK_DATA === "true") || false;
+
+const welcomeMessage: ChatMessage = {
+  id: "welcome",
+  role: "assistant",
+  content:
+    "**Arad Quality Copilot ready.** I have live context from your GR&R studies, SPC monitors, alerts, and audit trail.\n\nAsk me about measurement system health, control-chart violations, or what to do next — or pick a suggestion below.",
+  timestamp: new Date(),
+};
+
 export default function ChatPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>(exampleChat);
+  const [messages, setMessages] = useState<ChatMessage[]>(ALLOW_MOCK ? exampleChat : [welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
