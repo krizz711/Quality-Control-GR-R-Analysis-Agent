@@ -163,6 +163,56 @@ class NotificationDelivery(Base):
     )
 
 
+class Gage(Base):
+    """Inspection gage / fixture in the registry."""
+
+    __tablename__ = "gages"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
+    type: Mapped[str] = mapped_column(String(200), default="Inspection gage")
+    nominal: Mapped[float | None] = mapped_column(Float)
+    tolerance: Mapped[float | None] = mapped_column(Float)
+    calibration_due: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    )
+
+
+class AlertRule(Base):
+    """No-code routing rule: WHEN <trigger> ON <scope> THEN notify <channels>."""
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
+    trigger: Mapped[str] = mapped_column(String(48))
+    threshold: Mapped[float | None] = mapped_column(Float)
+    scope: Mapped[str] = mapped_column(String(200), default="Any process")
+    channels: Mapped[list | None] = mapped_column(JSON)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    )
+
+
+class SystemSetting(Base):
+    """Runtime config (integration credentials, LLM key) set via the admin UI.
+
+    Secret values are stored encrypted (see core/settings_store.py).
+    """
+
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    is_secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(128))
+
+
 class User(Base):
     __tablename__ = "users"
 

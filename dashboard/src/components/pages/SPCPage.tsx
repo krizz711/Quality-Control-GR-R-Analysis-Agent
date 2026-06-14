@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, CheckCircle2, Loader2, Plus, RotateCcw, Send } from "lucide-react";
+import { Activity, AlertTriangle, Check, CheckCircle2, Loader2, PenLine, Plus, RotateCcw, Send, Wrench, X } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -72,6 +72,32 @@ function SPCTooltip({
 type BaselineLimits = { ucl: number; lcl: number; target: number };
 
 const BASELINE_KEY = "arad-spc-baseline";
+const ACKS_KEY = "arad-spc-acks";
+
+const violationKey = (violation: SPCViolation) => `${violation.rule}:${violation.index}`;
+
+type RuleInfo = { title: string; action: string };
+
+/**
+ * Human-readable title + recommended corrective action for an SPC rule code.
+ * Handles Nelson / Western-Electric variants (rule_1, nelson_rule_1, …) by the
+ * trailing number, falling back to the backend description.
+ */
+function ruleInfo(rule: string, description: string): RuleInfo {
+  const num = (rule.toLowerCase().match(/(\d+)/) || [])[1];
+  const map: Record<string, RuleInfo> = {
+    "1": { title: "Point beyond 3σ (outside control limits)", action: "Investigate immediately — a special cause is likely. Re-verify the measurement, then check machine setup, material lot, and tooling for this sample." },
+    "2": { title: "9 points on one side of the centerline", action: "The process mean has shifted. Review setup changes, a new material lot, or an operator/shift change since the run began." },
+    "3": { title: "6 points trending up or down", action: "Gradual drift in progress. Check for tool wear, temperature change, or a loosening fixture." },
+    "4": { title: "14 points alternating up and down", action: "Likely over-adjustment (tampering) or two alternating sources — e.g. two fixtures, heads, or gauges." },
+    "5": { title: "2 of 3 points in Zone A (beyond 2σ)", action: "Early instability warning. Monitor closely and look for an emerging special cause." },
+    "6": { title: "4 of 5 points in Zone B (beyond 1σ)", action: "A small sustained shift. Review recent process-input changes." },
+    "7": { title: "15 points hugging the centerline (Zone C)", action: "Unusually low variation — check for a measurement problem or incorrect/stratified limits." },
+    "8": { title: "8 points beyond 1σ with none in Zone C", action: "Mixture pattern — the data likely comes from two distinct process streams." },
+  };
+  if (num && map[num]) return map[num];
+  return { title: description || rule, action: "Investigate the flagged measurement for an assignable cause and document the disposition." };
+}
 
 export default function SPCPage() {
   const [processDraft, setProcessDraft] = useState("Torque Press Line 1");
@@ -82,6 +108,9 @@ export default function SPCPage() {
   const [baseline, setBaseline] = useState<BaselineLimits | null>(null);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [acks, setAcks] = useState<Record<string, { acked: boolean; note: string }>>({});
+  const [noteDraft, setNoteDraft] = useState("");
 
   const persistBaseline = (name: string, limits: BaselineLimits | null) => {
     setBaseline(limits);
@@ -156,6 +185,21 @@ export default function SPCPage() {
     void loadHistory();
   }, [loadHistory]);
 
+  // Load per-process acknowledgements / disposition notes (client-side QA log).
+  useEffect(() => {
+    setSelectedKey(null);
+    if (!processName) {
+      setAcks({});
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(`${ACKS_KEY}:${processName}`);
+      setAcks(raw ? (JSON.parse(raw) as Record<string, { acked: boolean; note: string }>) : {});
+    } catch {
+      setAcks({});
+    }
+  }, [processName]);
+
   useRealtimeStream({
     enabled: Boolean(processName),
     onEvent: (event) => {
@@ -189,6 +233,22 @@ export default function SPCPage() {
   const zoneTwoUpper = centerLine + 2 * sigma;
   const zoneTwoLower = centerLine - 2 * sigma;
   const activeViolations = analysis?.violations ?? [];
+  const selectedViolation = activeViolations.find((violation) => violationKey(violation) === selectedKey) ?? null;
+
+  const selectViolation = (violation: SPCViolation) => {
+    const key = violationKey(violation);
+    setSelectedKey(key);
+    setNoteDraft(acks[key]?.note ?? "");
+  };
+
+  const updateAck = (key: string, patch: Partial<{ acked: boolean; note: string }>) => {
+    setAcks((prev) => {
+      const base = prev[key] ?? { acked: false, note: "" };
+      const next = { ...prev, [key]: { ...base, ...patch } };
+      if (processName) window.localStorage.setItem(`${ACKS_KEY}:${processName}`, JSON.stringify(next));
+      return next;
+    });
+  };
 
   const registerProcess = () => {
     const name = processDraft.trim();
@@ -415,15 +475,20 @@ export default function SPCPage() {
                       dot={(props) => {
                         if (typeof props.cx !== "number" || typeof props.cy !== "number") return null;
                         const point = props.payload as ChartPoint;
+                        const key = point.violation ? violationKey(point.violation) : null;
+                        const isSelected = key !== null && key === selectedKey;
+                        const isAcked = key !== null && Boolean(acks[key]?.acked);
                         return (
                           <circle
                             key={props.index}
                             cx={props.cx}
                             cy={props.cy}
-                            r={point.violation ? 5 : 3}
-                            fill={point.violation ? "var(--critical)" : "var(--live)"}
-                            stroke="var(--bg-root)"
-                            strokeWidth={2}
+                            r={point.violation ? (isSelected ? 6.5 : 5) : 3}
+                            fill={point.violation ? (isAcked ? "#f59e0b" : "var(--critical)") : "var(--live)"}
+                            stroke={isSelected ? "var(--text-primary)" : "var(--bg-root)"}
+                            strokeWidth={isSelected ? 2.5 : 2}
+                            style={{ cursor: point.violation ? "pointer" : "default" }}
+                            onClick={() => point.violation && selectViolation(point.violation)}
                           />
                         );
                       }}
@@ -451,24 +516,146 @@ export default function SPCPage() {
             </div>
 
             {activeViolations.length ? (
-              <div className="mt-4 space-y-2">
-                {activeViolations.map((violation, index) => (
-                  <div
-                    key={`${violation.rule}-${violation.index}-${index}`}
-                    className="rounded-xl border px-4 py-3 text-sm"
-                    style={{
-                      borderColor: "rgba(239,68,68,0.22)",
-                      background: "var(--critical-bg)",
-                      color: "var(--text-primary)",
-                      boxShadow: "inset 2.5px 0 0 var(--critical)",
-                    }}
-                  >
-                    <span className="font-semibold" style={{ color: "var(--critical-text)" }}>
-                      {violation.rule}
-                    </span>{" "}
-                    at measurement {violation.index + 1}: {violation.description}
-                  </div>
-                ))}
+              <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+                <div className="space-y-2">
+                  <div className="section-label text-[10px]">Violations · click to investigate</div>
+                  {activeViolations.map((violation, index) => {
+                    const key = violationKey(violation);
+                    const selected = key === selectedKey;
+                    const acked = Boolean(acks[key]?.acked);
+                    const info = ruleInfo(violation.rule, violation.description);
+                    return (
+                      <button
+                        key={`${key}-${index}`}
+                        onClick={() => selectViolation(violation)}
+                        className="w-full rounded-xl border px-4 py-3 text-left text-sm transition"
+                        style={{
+                          borderColor: selected ? "var(--critical)" : "rgba(239,68,68,0.22)",
+                          background: selected ? "rgba(239,68,68,0.12)" : "var(--critical-bg)",
+                          color: "var(--text-primary)",
+                          boxShadow: `inset 2.5px 0 0 ${selected ? "var(--critical)" : "rgba(239,68,68,0.4)"}`,
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold leading-snug" style={{ color: "var(--critical-text)" }}>
+                            {info.title}
+                          </span>
+                          {acked ? (
+                            <span className="badge badge-success h-5 shrink-0 gap-1 px-1.5 text-[10px]">
+                              <Check size={10} /> Ack
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                          Measurement {violation.index + 1} · {violation.rule}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="panel-inset p-4">
+                  {selectedViolation ? (
+                    (() => {
+                      const info = ruleInfo(selectedViolation.rule, selectedViolation.description);
+                      const key = violationKey(selectedViolation);
+                      const ack = acks[key];
+                      return (
+                        <div>
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--critical-text)" }}>
+                                {selectedViolation.rule}
+                              </div>
+                              <h3 className="mt-1 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                                {info.title}
+                              </h3>
+                            </div>
+                            <button onClick={() => setSelectedKey(null)} className="btn-icon" aria-label="Close detail">
+                              <X size={15} />
+                            </button>
+                          </div>
+
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <div className="surface-card p-3">
+                              <div className="section-label text-[10px]">Measurement #</div>
+                              <div className="stat-number mt-1.5 text-lg" style={{ color: "var(--text-primary)" }}>
+                                {selectedViolation.index + 1}
+                              </div>
+                            </div>
+                            <div className="surface-card p-3">
+                              <div className="section-label text-[10px]">Value</div>
+                              <div className="stat-number mt-1.5 text-lg" style={{ color: "var(--critical-text)" }}>
+                                {formatNumber(measurements[selectedViolation.index])}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 rounded-lg border px-3 py-2.5" style={{ borderColor: "var(--border-default)", background: "var(--bg-elevated)" }}>
+                            <div className="section-label flex items-center gap-1.5 text-[10px]">
+                              <Wrench size={12} /> Recommended action
+                            </div>
+                            <p className="mt-1.5 text-sm leading-6" style={{ color: "var(--text-secondary)" }}>
+                              {info.action}
+                            </p>
+                          </div>
+
+                          {selectedViolation.description ? (
+                            <p className="mt-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                              Detector: {selectedViolation.description}
+                            </p>
+                          ) : null}
+
+                          <label className="mt-3 block">
+                            <span className="section-label flex items-center gap-1.5 text-[10px]">
+                              <PenLine size={12} /> Annotation
+                            </span>
+                            <textarea
+                              value={noteDraft}
+                              onChange={(event) => setNoteDraft(event.target.value)}
+                              rows={2}
+                              placeholder="Add a disposition note…"
+                              className="input-field mt-1.5 text-xs"
+                            />
+                          </label>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <button
+                              onClick={() => updateAck(key, { acked: !ack?.acked })}
+                              className={`btn h-8 px-3 text-xs ${ack?.acked ? "btn-secondary" : "btn-primary"}`}
+                            >
+                              {ack?.acked ? <><RotateCcw size={13} /> Un-acknowledge</> : <><Check size={13} /> Acknowledge</>}
+                            </button>
+                            <button
+                              onClick={() => { updateAck(key, { note: noteDraft }); showToast("Annotation saved."); }}
+                              className="btn btn-secondary h-8 px-3 text-xs"
+                            >
+                              <PenLine size={13} /> Save note
+                            </button>
+                          </div>
+
+                          {ack?.acked ? (
+                            <div className="mt-2 text-[11px]" style={{ color: "var(--success-text)" }}>
+                              Acknowledged{ack?.note ? " · note on file" : ""}.
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div className="flex h-full min-h-[160px] flex-col items-center justify-center text-center">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-xl border" style={{ borderColor: "var(--border-default)", background: "var(--bg-elevated)", color: "var(--text-muted)" }}>
+                        <AlertTriangle size={16} />
+                      </div>
+                      <p className="mt-3 text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                        Investigate a violation
+                      </p>
+                      <p className="mt-1 max-w-[220px] text-xs" style={{ color: "var(--text-muted)" }}>
+                        Click any red point on the chart or a violation in the list to see the rule and recommended action.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : null}
           </div>

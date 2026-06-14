@@ -32,8 +32,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from core.config import settings
 import os
 from agent import alerts as alerts_mod
+from sqlalchemy import select
+
 from db.database import AsyncSessionLocal
-from db.models import Alert, AuditLog, NotificationDelivery
+from db.models import Alert, AlertRule, AuditLog, NotificationDelivery
 from backend.services.audit_logger import log_event as audit_log_event
 
 logger = logging.getLogger(__name__)
@@ -153,6 +155,38 @@ class AlertManager:
             logger.debug("LLM explanation generation failed; using message as-is")
             return ""
 
+    # ── Routing rules ────────────────────────────────────────────────────
+
+    async def _allowed_channels(self, ev: AlertEvent) -> Optional[set]:
+        """Channels permitted for this event by enabled routing rules.
+
+        Returns the union of channels from rules whose trigger + scope match the
+        event, or ``None`` when no rule matches — in which case dispatch falls
+        back to the default behaviour of notifying every configured channel.
+        """
+        try:
+            async with AsyncSessionLocal() as session:
+                rules = (
+                    await session.execute(select(AlertRule).where(AlertRule.enabled.is_(True)))
+                ).scalars().all()
+        except Exception:
+            logger.debug("Alert-rule lookup failed; using default channel routing")
+            return None
+
+        matched: set = set()
+        any_match = False
+        proc = (ev.process_name or "").lower()
+        for rule in rules:
+            if rule.trigger != ev.type:
+                continue
+            scope = (rule.scope or "").strip().lower()
+            if scope and not scope.startswith("any") and scope not in proc:
+                continue
+            any_match = True
+            for channel in (rule.channels or []):
+                matched.add(str(channel))
+        return matched if any_match else None
+
     # ── Main dispatch ────────────────────────────────────────────────────
 
     async def send(self, ev: AlertEvent) -> uuid.UUID | None:
@@ -183,6 +217,9 @@ class AlertManager:
             await session.commit()
             await session.refresh(alert)
 
+            # Routing rules decide which configured channels fire (None = all).
+            allowed = await self._allowed_channels(ev)
+
             try:
                 await redis.set(dedupe_key, str(alert.id), ex=self.DEDUPE_TTL)
             except Exception:
@@ -193,7 +230,7 @@ class AlertManager:
 
             # ── Slack (all severities) ───────────────────────────────────
             slack_url = settings.slack_webhook_url or os.environ.get("SLACK_WEBHOOK_URL")
-            if slack_url:
+            if slack_url and (allowed is None or "slack" in allowed):
                 slack_payload = alerts_mod._build_block_kit_payload(
                     message=ev.message,
                     severity=ev.severity,
@@ -254,7 +291,7 @@ class AlertManager:
             alert_email_recipients = settings.alert_email_recipients or os.environ.get(
                 "ALERT_EMAIL_RECIPIENTS"
             )
-            if smtp_host and alert_email_recipients:
+            if smtp_host and alert_email_recipients and (allowed is None or "email" in allowed):
                 recipients = [r.strip() for r in alert_email_recipients.split(",") if r.strip()]
 
                 async def _do_email():
@@ -315,7 +352,7 @@ class AlertManager:
             # ── SMS — critical only ──────────────────────────────────────
             sms_webhook = settings.sms_webhook_url or os.environ.get("SMS_WEBHOOK_URL")
             sms_to_numbers = settings.sms_to_numbers or os.environ.get("SMS_TO_NUMBERS")
-            if ev.severity == "critical" and sms_webhook and sms_to_numbers:
+            if ev.severity == "critical" and sms_webhook and sms_to_numbers and (allowed is None or "sms" in allowed):
                 to_numbers = [n.strip() for n in sms_to_numbers.split(",") if n.strip()]
 
                 async def _do_sms():
@@ -379,6 +416,9 @@ class AlertManager:
                 # Legacy: also fire on any spc_violation type for backward compat
                 if ev.type == "spc_violation" and not should_create_jira:
                     should_create_jira = True
+
+            if allowed is not None and "jira" not in allowed:
+                should_create_jira = False
 
             if should_create_jira:
                 jira_summary = f"Quality Alert: {ev.process_name} {ev.type}"
@@ -473,11 +513,11 @@ class AlertManager:
             # Best-effort: record an audit event for the alert send (channels attempted)
             try:
                 channels = []
-                if slack_url:
+                if slack_url and (allowed is None or "slack" in allowed):
                     channels.append("slack")
-                if smtp_host and alert_email_recipients:
+                if smtp_host and alert_email_recipients and (allowed is None or "email" in allowed):
                     channels.append("email")
-                if ev.severity == "critical" and sms_webhook and sms_to_numbers:
+                if ev.severity == "critical" and sms_webhook and sms_to_numbers and (allowed is None or "sms" in allowed):
                     channels.append("sms")
                 if should_create_jira:
                     channels.append("jira")

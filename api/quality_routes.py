@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 
 from backend.services import gemini_service as geminiService
@@ -21,8 +21,10 @@ from api.rate_limit import limiter
 from api.realtime import publish_realtime_event, state as realtime_state
 from core.config import settings
 from db.database import AsyncSessionLocal
-from db.models import Alert, AlertFeedback, AuditLog, GrrStudy, Measurement, NotificationDelivery
+from db.models import Alert, AlertFeedback, AlertRule, AuditLog, Gage, GrrStudy, Measurement, NotificationDelivery
 from backend.services.audit_logger import log_event as audit_log_event
+from api.auth import get_current_user
+from core import settings_store
 from fastapi.responses import StreamingResponse
 import io, csv
 from grr.acceptance import evaluate
@@ -178,6 +180,7 @@ class GRRHistoryItem(BaseModel):
     verdict: Literal["pass", "acceptable", "fail"]
     operator_count: int
     part_count: int
+    process_name: str | None = None
 
 
 class SPCDataRequest(BaseModel):
@@ -657,7 +660,7 @@ async def get_grr_history() -> list[GRRHistoryItem]:
             text(
                 """
                 SELECT id, completed_at, created_at, grr_pct, acceptance_decision,
-                       operator_count, part_count
+                       operator_count, part_count, characteristic_name
                 FROM grr_studies
                 ORDER BY COALESCE(completed_at, created_at) DESC
                 LIMIT 50
@@ -669,6 +672,8 @@ async def get_grr_history() -> list[GRRHistoryItem]:
     history: list[GRRHistoryItem] = []
     for row in rows:
         grr_percent = row.get("grr_pct")
+        characteristic = row.get("characteristic_name")
+        process_name = None if not characteristic or characteristic == "grr_analysis" else characteristic
         history.append(
             GRRHistoryItem(
                 id=str(row["id"]),
@@ -677,9 +682,205 @@ async def get_grr_history() -> list[GRRHistoryItem]:
                 verdict=_verdict_from_grr(grr_percent),
                 operator_count=int(row.get("operator_count") or 0),
                 part_count=int(row.get("part_count") or 0),
+                process_name=process_name,
             )
         )
     return history
+
+
+# ── Gage registry ────────────────────────────────────────────────────────────
+class GageCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    type: str = Field(default="Inspection gage", max_length=200)
+    nominal: float | None = None
+    tolerance: float | None = None
+    calibration_due: str | None = Field(default=None, max_length=32)
+
+
+class GageResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    nominal: float | None = None
+    tolerance: float | None = None
+    calibration_due: str | None = None
+    created_at: datetime
+
+
+def _gage_to_response(g: Gage) -> GageResponse:
+    return GageResponse(
+        id=str(g.id),
+        name=g.name,
+        type=g.type,
+        nominal=g.nominal,
+        tolerance=g.tolerance,
+        calibration_due=g.calibration_due,
+        created_at=g.created_at,
+    )
+
+
+@router.get("/gages", response_model=list[GageResponse])
+async def list_gages() -> list[GageResponse]:
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(select(Gage).order_by(Gage.created_at.desc()))).scalars().all()
+    return [_gage_to_response(g) for g in rows]
+
+
+@router.post("/gages", response_model=GageResponse, status_code=status.HTTP_201_CREATED)
+async def create_gage(body: GageCreate) -> GageResponse:
+    async with AsyncSessionLocal() as session:
+        gage = Gage(
+            name=body.name.strip(),
+            type=(body.type or "Inspection gage").strip(),
+            nominal=body.nominal,
+            tolerance=body.tolerance,
+            calibration_due=body.calibration_due or None,
+        )
+        session.add(gage)
+        await session.commit()
+        await session.refresh(gage)
+        return _gage_to_response(gage)
+
+
+@router.delete("/gages/{gage_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_gage(gage_id: str) -> None:
+    try:
+        gid = uuid.UUID(gage_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid gage id") from exc
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("DELETE FROM gages WHERE id = :id"), {"id": str(gid)})
+        await session.commit()
+    return None
+
+
+# ── Alert routing rules ──────────────────────────────────────────────────────
+_RULE_TRIGGERS = {"grr_fail", "spc_violation", "calibration_overdue", "pass_rate_below"}
+
+
+class AlertRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    trigger: str = Field(..., max_length=48)
+    threshold: float | None = None
+    scope: str = Field(default="Any process", max_length=200)
+    channels: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class AlertRuleUpdate(BaseModel):
+    name: str | None = None
+    trigger: str | None = None
+    threshold: float | None = None
+    scope: str | None = None
+    channels: list[str] | None = None
+    enabled: bool | None = None
+
+
+class AlertRuleResponse(BaseModel):
+    id: str
+    name: str
+    trigger: str
+    threshold: float | None = None
+    scope: str
+    channels: list[str]
+    enabled: bool
+    created_at: datetime
+
+
+def _rule_to_response(r: AlertRule) -> AlertRuleResponse:
+    return AlertRuleResponse(
+        id=str(r.id),
+        name=r.name,
+        trigger=r.trigger,
+        threshold=r.threshold,
+        scope=r.scope,
+        channels=list(r.channels or []),
+        enabled=bool(r.enabled),
+        created_at=r.created_at,
+    )
+
+
+@router.get("/alert-rules", response_model=list[AlertRuleResponse])
+async def list_alert_rules() -> list[AlertRuleResponse]:
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(select(AlertRule).order_by(AlertRule.created_at.desc()))).scalars().all()
+    return [_rule_to_response(r) for r in rows]
+
+
+@router.post("/alert-rules", response_model=AlertRuleResponse, status_code=status.HTTP_201_CREATED)
+async def create_alert_rule(body: AlertRuleCreate) -> AlertRuleResponse:
+    if body.trigger not in _RULE_TRIGGERS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unknown trigger")
+    async with AsyncSessionLocal() as session:
+        rule = AlertRule(
+            name=body.name.strip(),
+            trigger=body.trigger,
+            threshold=body.threshold,
+            scope=(body.scope or "Any process").strip(),
+            channels=body.channels,
+            enabled=body.enabled,
+        )
+        session.add(rule)
+        await session.commit()
+        await session.refresh(rule)
+        return _rule_to_response(rule)
+
+
+@router.patch("/alert-rules/{rule_id}", response_model=AlertRuleResponse)
+async def update_alert_rule(rule_id: str, body: AlertRuleUpdate) -> AlertRuleResponse:
+    try:
+        rid = uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid rule id") from exc
+    async with AsyncSessionLocal() as session:
+        rule = await session.get(AlertRule, rid)
+        if rule is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+        for key, value in body.model_dump(exclude_unset=True).items():
+            setattr(rule, key, value)
+        await session.commit()
+        await session.refresh(rule)
+        return _rule_to_response(rule)
+
+
+@router.delete("/alert-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_alert_rule(rule_id: str) -> None:
+    try:
+        rid = uuid.UUID(rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid rule id") from exc
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("DELETE FROM alert_rules WHERE id = :id"), {"id": str(rid)})
+        await session.commit()
+    return None
+
+
+# ── System settings (admin) — integration credentials + LLM key ──────────────
+class SettingsUpdate(BaseModel):
+    values: dict[str, str]
+
+
+class SettingsTestRequest(BaseModel):
+    channel: str
+
+
+@router.get("/settings")
+async def get_settings(_user: dict = Depends(get_current_user)) -> dict:
+    """Masked integration config for the admin UI (secrets never returned)."""
+    return {"settings": await settings_store.get_masked()}
+
+
+@router.put("/settings")
+async def put_settings(payload: SettingsUpdate, _user: dict = Depends(get_current_user)) -> dict:
+    actor = _user.get("username") if isinstance(_user, dict) else None
+    await settings_store.set_many(payload.values, updated_by=actor)
+    return {"settings": await settings_store.get_masked()}
+
+
+@router.post("/settings/test")
+async def test_settings(payload: SettingsTestRequest, _user: dict = Depends(get_current_user)) -> dict:
+    ok, message = await settings_store.test_channel(payload.channel)
+    return {"ok": ok, "message": message}
 
 
 @limiter.limit("20/minute")

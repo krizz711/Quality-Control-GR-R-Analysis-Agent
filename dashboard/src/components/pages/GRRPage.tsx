@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import {
@@ -8,9 +8,11 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
+  ClipboardPaste,
   Download,
   FileUp,
   Gauge,
+  Keyboard,
   Loader2,
   Plus,
   RefreshCw,
@@ -28,6 +30,7 @@ import {
   type GRRInputMeasurement,
 } from "@/api/apiClient";
 import { grrVerdict } from "@/lib/utils";
+import { useAppStore } from "@/lib/store";
 
 type Step = 1 | 2 | 3;
 
@@ -110,6 +113,23 @@ function parseCsv(text: string) {
       value: Number(record.value),
     };
   });
+}
+
+/**
+ * Parse an arbitrary block pasted from Excel/Sheets into an ordered list of
+ * numeric values. Handles tab-, comma-, semicolon- and whitespace-separated
+ * cells across multiple rows; non-numeric cells (e.g. stray headers) are dropped.
+ */
+function parseClipboardNumbers(text: string): number[] {
+  return text
+    .replace(/ /g, " ")
+    .trim()
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/[\t,;\s]+/))
+    .map((cell) => cell.trim())
+    .filter((cell) => cell.length > 0)
+    .map((cell) => Number(cell))
+    .filter((value) => Number.isFinite(value));
 }
 
 function createMeasurementRows(operators: number, parts: number, trials: number) {
@@ -212,6 +232,8 @@ export default function GRRPage() {
   const [analysis, setAnalysis] = useState<AnalysisState>({ result: null, loading: false, error: null });
   const [tableReady, setTableReady] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 
   const {
@@ -220,6 +242,7 @@ export default function GRRPage() {
     handleSubmit,
     trigger,
     getValues,
+    setValue,
     formState: { errors },
   } = useForm<GRRFormValues>({
     defaultValues,
@@ -242,6 +265,17 @@ export default function GRRPage() {
   const trials = useWatch({ control, name: "trials" });
   const processName = useWatch({ control, name: "processName" });
   const partTolerance = useWatch({ control, name: "partTolerance" });
+  const { grrPrefill, setGrrPrefill } = useAppStore();
+
+  // Prefill from the Gage Registry "Run GR&R study" action.
+  useEffect(() => {
+    if (!grrPrefill) return;
+    if (grrPrefill.processName) setValue("processName", grrPrefill.processName);
+    if (grrPrefill.partTolerance != null) setValue("partTolerance", grrPrefill.partTolerance);
+    setGrrPrefill(null);
+    showToast(`Loaded ${grrPrefill.processName ?? "gage"} into the study setup.`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const step1Valid = async () => {
     return trigger(["operators", "parts", "trials", "processName", "partTolerance"]);
@@ -292,6 +326,63 @@ export default function GRRPage() {
       showToast(error instanceof Error ? error.message : "CSV import failed");
     } finally {
       setImporting(false);
+    }
+  };
+
+  /** Fill the measurement grid in display order from a flat list of values. */
+  const applyFlatValues = (values: number[]) => {
+    if (!fields.length) {
+      showToast("Generate the measurement table before pasting values.");
+      return;
+    }
+    if (!values.length) {
+      showToast("No numeric values found to paste.");
+      return;
+    }
+    const current = getValues("measurements");
+    const next = current.map((row, index) => ({
+      ...row,
+      value: index < values.length && Number.isFinite(values[index]) ? values[index] : row.value,
+    }));
+    replace(next);
+    if (values.length > fields.length) {
+      showToast(`Filled ${fields.length} cells · ${values.length - fields.length} extra value(s) ignored.`);
+    } else {
+      showToast(`Filled ${values.length} of ${fields.length} cells.`);
+    }
+  };
+
+  const applyPaste = (text: string) => {
+    applyFlatValues(parseClipboardNumbers(text));
+    setShowPaste(false);
+    setPasteText("");
+  };
+
+  /** Seed the grid with realistic, well-behaved sample data for demos/onboarding. */
+  const loadSampleData = () => {
+    if (!fields.length) {
+      showToast("Generate the measurement table first.");
+      return;
+    }
+    const current = getValues("measurements");
+    const next = current.map((row) => {
+      const opNum = Number(/(\d+)/.exec(row.operator)?.[1] ?? 1);
+      const partBase = 10 + (Number(row.part) - 1) * 0.5;
+      const opBias = (opNum - 1) * 0.03;
+      const noise = (Math.random() - 0.5) * 0.05;
+      return { ...row, value: Number((partBase + opBias + noise).toFixed(3)) };
+    });
+    replace(next);
+    showToast("Loaded sample measurement data.");
+  };
+
+  /** Move keyboard focus between measurement cells (arrow keys / Enter). */
+  const focusCell = (index: number) => {
+    if (index < 0) return;
+    const el = document.getElementById(`grr-value-${index}`) as HTMLInputElement | null;
+    if (el) {
+      el.focus();
+      el.select();
     }
   };
 
@@ -577,7 +668,14 @@ export default function GRRPage() {
                       · {operators} operators · {parts} parts · {trials} trials
                     </span>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowPaste((value) => !value)}
+                      className="btn btn-secondary h-8 px-3 text-xs"
+                    >
+                      <ClipboardPaste size={14} /> Paste from Excel
+                    </button>
                     <label className="btn btn-secondary h-8 cursor-pointer px-3 text-xs">
                       {importing ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                       Import CSV
@@ -596,6 +694,13 @@ export default function GRRPage() {
                     </label>
                     <button
                       type="button"
+                      onClick={loadSampleData}
+                      className="btn btn-ghost h-8 px-3 text-xs"
+                    >
+                      <Sparkles size={14} /> Load sample
+                    </button>
+                    <button
+                      type="button"
                       onClick={async () => {
                         const valid = await trigger("measurements");
                         if (valid) setStep(3);
@@ -607,6 +712,63 @@ export default function GRRPage() {
                     </button>
                   </div>
                 </div>
+
+                <AnimatePresence>
+                  {showPaste && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mt-4 overflow-hidden"
+                    >
+                      <div className="panel-inset p-4">
+                        <div className="mb-2 flex items-center gap-2">
+                          <ClipboardPaste size={14} className="text-[var(--accent-bright)]" />
+                          <span className="section-label">Paste measurement values</span>
+                        </div>
+                        <p className="mb-3 text-xs leading-5 text-[var(--text-muted)]">
+                          Copy a column or block of values from Excel/Sheets and paste below. Values fill the table
+                          top-to-bottom in display order — Operator 1 (all parts × trials), then Operator 2, and so on.
+                          <span className="text-[var(--text-secondary)]"> {fields.length} cells expected.</span>
+                        </p>
+                        <textarea
+                          value={pasteText}
+                          onChange={(event) => setPasteText(event.target.value)}
+                          onPaste={(event) => {
+                            const text = event.clipboardData.getData("text");
+                            if (text) {
+                              event.preventDefault();
+                              applyPaste(text);
+                            }
+                          }}
+                          placeholder="Paste here (Ctrl+V / ⌘V)…"
+                          rows={4}
+                          spellCheck={false}
+                          className="input-field stat-number text-xs"
+                        />
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => applyPaste(pasteText)}
+                            className="btn btn-primary h-8 px-3 text-xs"
+                          >
+                            Apply values
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPasteText("");
+                              setShowPaste(false);
+                            }}
+                            className="btn btn-ghost h-8 px-3 text-xs"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 <div className="mt-5 panel-inset p-4">
                   <div className="flex items-center justify-between gap-3">
@@ -620,7 +782,12 @@ export default function GRRPage() {
                   </div>
                 </div>
 
-                <div className="mt-5 overflow-hidden rounded-xl border border-[var(--border-default)]">
+                <div className="mt-4 flex items-center gap-1.5 text-[11px] text-[var(--text-ghost)]">
+                  <Keyboard size={12} />
+                  <span>Use ↑ ↓ or Enter to move between cells · paste from Excel to fill all at once</span>
+                </div>
+
+                <div className="mt-3 overflow-hidden rounded-xl border border-[var(--border-default)]">
                   <div className="max-h-[520px] overflow-auto">
                     <table className="min-w-full text-left text-sm">
                       <thead className="sticky top-0 z-10 bg-[var(--bg-elevated)] font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
@@ -639,6 +806,7 @@ export default function GRRPage() {
                             <td className="px-4 py-3 text-[var(--text-secondary)]">{field.trial}</td>
                             <td className="px-4 py-3">
                               <input
+                                id={`grr-value-${index}`}
                                 type="number"
                                 step="0.0001"
                                 {...register(`measurements.${index}.value`, {
@@ -646,6 +814,15 @@ export default function GRRPage() {
                                   required: "Measurement is required",
                                   validate: (v) => !Number.isNaN(v) || "Required",
                                 })}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" || event.key === "ArrowDown") {
+                                    event.preventDefault();
+                                    focusCell(index + 1);
+                                  } else if (event.key === "ArrowUp") {
+                                    event.preventDefault();
+                                    focusCell(index - 1);
+                                  }
+                                }}
                                 className={`${inputClass} stat-number ${errors.measurements?.[index]?.value ? "input-error" : ""}`}
                                 placeholder="Enter value"
                               />

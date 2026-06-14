@@ -45,6 +45,7 @@ export interface GRRHistoryItem {
   verdict: "pass" | "acceptable" | "fail";
   operator_count: number;
   part_count: number;
+  process_name?: string | null;
 }
 
 export interface SPCInput {
@@ -351,6 +352,73 @@ export const apiClient = {
   },
 };
 
+// ── Streaming chat (Server-Sent Events) ─────────────────────────────────────
+// Each event mirrors a real operation the agent performs: a context query
+// finishing (with a real row count), the reasoning step, answer tokens, and a
+// final summary. The dashboard renders these directly as the live work-log.
+export type AgentStreamEvent =
+  | { t: "step"; id: string; phase: "start" | "done"; label?: string; detail?: string; count?: number; result?: string; status?: string }
+  | { t: "delta"; text: string }
+  | { t: "final"; answer: string; sources: string[]; ms: number }
+  | { t: "error"; message: string };
+
+export interface ChatStreamPayload {
+  question: string;
+  conversation_history: { role: string; content: string }[];
+}
+
+/**
+ * POST to the streaming chat endpoint and invoke `onEvent` for each SSE frame
+ * as it arrives. Resolves when the stream closes; rejects on a transport error
+ * or non-2xx status (so the caller can fall back to the non-streaming endpoint).
+ */
+export async function streamChat(
+  payload: ChatStreamPayload,
+  onEvent: (event: AgentStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const apiKey = resolveApiKey();
+  const res = await fetch(`${resolveApiBaseUrl()}/api/v1/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(apiKey ? { "X-API-Key": apiKey } : {}),
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!res.ok || !res.body) {
+    throw new Error(`chat stream failed: HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sep: number;
+    // SSE frames are separated by a blank line.
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+      if (!dataLine) continue;
+      const json = dataLine.slice(5).trim();
+      if (!json) continue;
+      try {
+        onEvent(JSON.parse(json) as AgentStreamEvent);
+      } catch {
+        /* ignore malformed frame */
+      }
+    }
+  }
+}
+
 // GR&R
 export const submitGRRAnalysis = (data: GRRInput) =>
   apiClient.post<GRRAnalysisResponse>("/api/v1/grr/analyze", data);
@@ -408,6 +476,70 @@ export const getReviews = () => apiClient.get<ReviewQueueItem[]>("/api/v1/review
 
 export const decideReview = (reviewId: string, data: ReviewDecisionInput) =>
   apiClient.patch<Record<string, unknown>>(`/api/v1/reviews/${reviewId}`, data);
+
+// ── Gage registry ────────────────────────────────────────────────────────────
+export interface Gage {
+  id: string;
+  name: string;
+  type: string;
+  nominal?: number | null;
+  tolerance?: number | null;
+  calibration_due?: string | null;
+  created_at: string;
+}
+
+export interface GageInput {
+  name: string;
+  type?: string;
+  nominal?: number | null;
+  tolerance?: number | null;
+  calibration_due?: string | null;
+}
+
+export const getGages = () => apiClient.get<Gage[]>("/api/v1/gages");
+export const createGage = (data: GageInput) => apiClient.post<Gage>("/api/v1/gages", data);
+export const deleteGage = (id: string) => apiClient.delete<void>(`/api/v1/gages/${id}`);
+
+// ── Alert routing rules ──────────────────────────────────────────────────────
+export interface AlertRuleRecord {
+  id: string;
+  name: string;
+  trigger: string;
+  threshold?: number | null;
+  scope: string;
+  channels: string[];
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface AlertRuleInput {
+  name: string;
+  trigger: string;
+  threshold?: number | null;
+  scope?: string;
+  channels: string[];
+  enabled?: boolean;
+}
+
+export const getAlertRules = () => apiClient.get<AlertRuleRecord[]>("/api/v1/alert-rules");
+export const createAlertRule = (data: AlertRuleInput) => apiClient.post<AlertRuleRecord>("/api/v1/alert-rules", data);
+export const updateAlertRule = (id: string, data: Partial<AlertRuleInput>) =>
+  apiClient.patch<AlertRuleRecord>(`/api/v1/alert-rules/${id}`, data);
+export const deleteAlertRule = (id: string) => apiClient.delete<void>(`/api/v1/alert-rules/${id}`);
+
+// ── System settings (admin: integration credentials + LLM key) ────────────────
+export interface SettingItem {
+  key: string;
+  secret: boolean;
+  configured: boolean;
+  value?: string;
+}
+
+export const getSettings = () => apiClient.get<{ settings: SettingItem[] }>("/api/v1/settings");
+export const updateSettings = (values: Record<string, string>) =>
+  apiClient.put<{ settings: SettingItem[] }>("/api/v1/settings", { values });
+export const testIntegration = (channel: string) =>
+  apiClient.post<{ ok: boolean; message: string }>("/api/v1/settings/test", { channel });
 
 export function useApi<T>(apiCall: () => Promise<T>, deps: unknown[] = []): UseApiState<T> {
   const [data, setData] = useState<T | null>(null);

@@ -11,6 +11,7 @@ from sqlalchemy.engine import make_url
 
 from api.realtime import state as realtime_state, start_realtime_runtime, stop_realtime_runtime
 from core.config import settings
+from core import settings_store
 from db.database import engine
 from db.models import Base
 
@@ -84,6 +85,8 @@ async def _broadcast_drainer(stop_event: asyncio.Event) -> None:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     realtime_state.loop = asyncio.get_running_loop()
     await _initialize_database_schema()
+    # Load DB-stored integration credentials onto the live settings/env.
+    await settings_store.apply_to_runtime()
     await start_realtime_runtime()
 
     try:

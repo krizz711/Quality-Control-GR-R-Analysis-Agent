@@ -575,3 +575,104 @@ CURRENT SYSTEM STATE:
     if last_status is not None:
         return f"I'm having trouble connecting right now (HTTP {last_status}). Please try again."
     return "I'm temporarily unavailable. Please try again in a moment."
+
+
+async def stream_quality_answer(
+    question: str,
+    context: dict[str, Any],
+    conversation_history: list[dict[str, str]],
+    api_key: str,
+):
+    """
+    Streaming variant of ``answer_quality_question``. Async-generates the answer
+    in text chunks as Gemini produces them, using the REST ``streamGenerateContent``
+    endpoint with ``?alt=sse``. Walks the model chain on per-model errors that occur
+    before any content streams. Never raises — yields an error sentence on failure.
+
+    Yields
+    ------
+    str
+        Incremental answer fragments (concatenate for the full answer).
+    """
+    context_str = json.dumps(context, indent=2, default=str)
+
+    system = f"""{_SYSTEM_PROMPT}
+
+You have access to the current quality system state below. Use it to answer
+the engineer's question accurately. Be concise. If data is missing, say so.
+If a question falls outside quality engineering, redirect politely.
+
+CURRENT SYSTEM STATE:
+{context_str}"""
+
+    messages: list[dict[str, Any]] = []
+    for turn in conversation_history[-6:]:
+        role = "model" if turn["role"] == "assistant" else "user"
+        messages.append({"role": role, "parts": [{"text": turn["content"]}]})
+    messages.append({"role": "user", "parts": [{"text": question}]})
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+    body = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": messages,
+        "generationConfig": {"maxOutputTokens": 600},
+    }
+
+    last_status: int | None = None
+    seen: set[str] = set()
+    for model in _MODEL_CHAIN:
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        url = f"{_GEMINI_BASE_URL}/{model}:streamGenerateContent?alt=sse"
+        try:
+            produced = False
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream("POST", url, headers=headers, json=body) as response:
+                    if response.status_code != 200:
+                        await response.aread()
+                        last_status = response.status_code
+                        logger.warning(
+                            "Gemini stream model %s HTTP %s; trying next model",
+                            model,
+                            last_status,
+                        )
+                        if last_status not in (404, 429, 500, 503):
+                            break
+                        continue
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        try:
+                            parts = chunk["candidates"][0]["content"]["parts"]
+                        except (KeyError, IndexError, TypeError):
+                            continue
+                        for part in parts:
+                            piece = part.get("text")
+                            if piece:
+                                produced = True
+                                yield piece
+
+                    usage = {}  # usageMetadata is not reliably available per-chunk over SSE
+                    _record_token_usage("chat", usage.get("prompt", 0), usage.get("out", 0))
+
+            if produced:
+                return
+        except Exception as exc:  # noqa: BLE001 — never raise out of the generator
+            logger.error("Gemini stream model %s failed: %s", model, exc)
+
+    if last_status is not None:
+        yield f"I'm having trouble connecting right now (HTTP {last_status}). Please try again."
+    else:
+        yield "I'm temporarily unavailable. Please try again in a moment."

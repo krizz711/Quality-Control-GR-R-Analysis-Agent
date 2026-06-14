@@ -754,3 +754,82 @@ body {
   border-radius: var(--radius-md) !important;
   box-shadow: var(--shadow-lg) !important;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AGENT CORE — signature animated mark
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes ac-spin { to { transform: rotate(360deg); } }
+@keyframes ac-spin-rev { to { transform: rotate(-360deg); } }
+@keyframes ac-pulse-ring { 0% { transform: scale(0.6); opacity: 0.5; } 100% { transform: scale(1.95); opacity: 0; } }
+@keyframes ac-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+
+.ac-rot { transform-box: view-box; transform-origin: 60px 60px; }
+.ac-pulse { transform-box: view-box; transform-origin: 60px 60px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .ac-spin { animation-name: ac-spin; animation-timing-function: linear; animation-iteration-count: infinite; animation-duration: 24s; }
+  .ac-spin-rev { animation-name: ac-spin-rev; animation-timing-function: linear; animation-iteration-count: infinite; animation-duration: 18s; }
+  .ac-pulse { animation: ac-pulse-ring 2.4s ease-out infinite; }
+  .ac-breathe { animation: ac-breathe 3.2s ease-in-out infinite; transform-box: view-box; transform-origin: 60px 60px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   AGENT ACTIVITY CONSOLE — telemetry signal-bus work-log
+   Reasoning steps sit as nodes on a charging bus: each ignites (scan sweep +
+   pulse + self-drawing glyph) while it runs, then locks into a solid faceted
+   node as the bus charges to the next stage.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes agent-line-in { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@keyframes agent-scan-spin { to { transform: rotate(360deg); } }
+@keyframes agent-pulse-node { 0% { transform: scale(0.72); opacity: 0.6; } 100% { transform: scale(1.95); opacity: 0; } }
+@keyframes agent-draw { to { stroke-dashoffset: 0; } }
+@keyframes agent-chip-in { from { opacity: 0; transform: translateX(8px) scale(0.92); } to { opacity: 1; transform: none; } }
+
+.agent-line { animation: agent-line-in 0.36s var(--ease-out) both; }
+
+.agent-row { position: relative; display: flex; align-items: center; gap: 14px; padding: 8px; }
+.agent-conn { position: absolute; left: 23px; top: 50%; width: 2px; height: 100%; background: var(--border-subtle); overflow: hidden; z-index: 0; }
+.agent-row:last-child .agent-conn { display: none; }
+.agent-conn > i { position: absolute; inset: 0; background: linear-gradient(180deg, var(--accent), var(--accent-ai)); transform: scaleY(0); transform-origin: top; transition: transform 0.55s var(--ease-out); }
+.agent-row[data-status="active"] .agent-conn > i,
+.agent-row[data-status="done"] .agent-conn > i { transform: scaleY(1); }
+
+.agent-gut { position: relative; z-index: 1; display: flex; width: 32px; height: 30px; flex: none; align-items: center; justify-content: center; }
+.agent-seat { position: relative; display: flex; width: 30px; height: 30px; align-items: center; justify-content: center; border-radius: 50%; color: var(--text-ghost); transition: color 0.3s, background 0.3s, box-shadow 0.3s; }
+.agent-glyph { display: flex; transition: transform 0.3s; }
+.agent-row[data-status="active"] .agent-seat { color: #fff; background: radial-gradient(circle, rgba(78, 140, 255, 0.32), rgba(78, 140, 255, 0.04) 72%); box-shadow: 0 0 20px -2px rgba(78, 140, 255, 0.6); }
+.agent-row[data-status="done"] .agent-seat { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-ai)); box-shadow: 0 0 16px -3px rgba(99, 120, 255, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.32); }
+.agent-row[data-status="done"] .agent-glyph { transform: scale(0.92); }
+.agent-row[data-status="skipped"] .agent-seat { opacity: 0.5; }
+
+.agent-pr, .agent-scan { position: absolute; border-radius: 50%; pointer-events: none; opacity: 0; }
+.agent-pr { inset: 0; border: 1px solid var(--accent-bright); }
+.agent-scan { inset: -3px; background: conic-gradient(from 0deg, transparent 0deg, rgba(130, 174, 255, 0.95) 55deg, transparent 110deg); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px)); mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px)); }
+
+.agent-meta { min-width: 0; flex: 1; }
+.agent-lbl { font-size: 13px; font-weight: 500; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 0.3s; }
+.agent-row[data-status="active"] .agent-lbl { color: var(--text-primary); }
+.agent-row[data-status="done"] .agent-lbl { color: var(--text-secondary); }
+.agent-det { font-size: 11px; color: var(--text-ghost); margin-top: 2px; height: 0; opacity: 0; overflow: hidden; transition: 0.3s; }
+.agent-row[data-status="active"] .agent-det { height: 15px; opacity: 1; }
+.agent-state { flex: none; text-align: right; }
+.agent-tmr { font-family: var(--font-mono); font-size: 11px; color: var(--accent-bright); font-variant-numeric: tabular-nums; }
+.agent-chip { display: inline-block; font-family: var(--font-mono); font-size: 11px; color: var(--accent-bright); background: var(--accent-bg); border-radius: 6px; padding: 3px 9px; font-variant-numeric: tabular-nums; animation: agent-chip-in 0.34s var(--ease-out) both; }
+.agent-skip { font-family: var(--font-mono); font-size: 11px; color: var(--text-ghost); }
+
+/* Streaming-answer caret — blinks while Gemini tokens type in */
+.agent-caret { display: inline-block; width: 7px; height: 14px; margin-top: 5px; border-radius: 1px; background: var(--accent-bright); vertical-align: text-bottom; }
+@keyframes agent-caret-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@media (prefers-reduced-motion: no-preference) { .agent-caret { animation: agent-caret-blink 1s steps(1) infinite; } }
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-row[data-status="active"] .agent-pr { animation: agent-pulse-node 1.6s ease-out infinite; }
+  .agent-row[data-status="active"] .agent-scan { opacity: 1; animation: agent-scan-spin 0.9s linear infinite; }
+  .agent-row[data-status="active"] .agent-seat .agent-glyph svg path { stroke-dasharray: 64; stroke-dashoffset: 64; animation: agent-draw 0.62s ease forwards; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-seat .agent-glyph svg path { stroke-dashoffset: 0; }
+}

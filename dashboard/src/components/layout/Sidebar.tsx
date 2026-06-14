@@ -9,25 +9,31 @@ import {
   FlaskConical,
   ChevronLeft,
   ChevronRight,
-  Hexagon,
   Wifi,
   Settings,
   HelpCircle,
   ClipboardCheck,
+  Ruler,
   ScrollText,
+  Workflow,
+  Plug,
 } from "lucide-react";
 import { useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { AgentCore } from "@/components/agent/AgentCore";
 import SettingsModal from "./SettingsModal";
 import { showToast } from "@/api/apiClient";
 
 const navItems = [
   { id: "dashboard", label: "Overview", icon: LayoutDashboard },
   { id: "grr", label: "GR&R Studies", icon: FlaskConical },
+  { id: "gages", label: "Gage Registry", icon: Ruler },
   { id: "review", label: "Review Queue", icon: ClipboardCheck },
   { id: "spc", label: "SPC Monitor", icon: Activity },
   { id: "alerts", label: "Alert Inbox", icon: AlertTriangle, badgeFromStore: true },
+  { id: "alert-rules", label: "Alert Rules", icon: Workflow },
+  { id: "integrations", label: "Integrations", icon: Plug },
   { id: "audit", label: "Audit Trail", icon: ScrollText },
   { id: "chat", label: "AI Copilot", icon: MessageSquare, ai: true },
 ];
@@ -49,20 +55,7 @@ export default function Sidebar() {
         <div className="flex h-16 items-center border-b px-4" style={{ borderColor: "var(--border-subtle)" }}>
           <div className="flex items-center gap-3 overflow-hidden">
             <div className="relative flex h-9 w-9 shrink-0 items-center justify-center">
-              <div
-                className="absolute inset-0 rounded-xl"
-                style={{
-                  background: "linear-gradient(135deg, #4e8cff 0%, #8b5cf6 100%)",
-                  boxShadow: "0 0 22px -2px rgba(78,140,255,0.55), inset 0 1px 0 rgba(255,255,255,0.3)",
-                }}
-              />
-              <Hexagon size={18} color="white" strokeWidth={2.2} className="relative z-10" />
-              <span
-                className="absolute z-10 font-mono text-[8px] font-bold tracking-tighter"
-                style={{ color: "white" }}
-              >
-                A
-              </span>
+              <AgentCore size={36} state="idle" />
             </div>
             <AnimatePresence>
               {!sidebarCollapsed && (

@@ -5,8 +5,11 @@ import Sidebar from "@/components/layout/Sidebar";
 import CommandBar from "@/components/layout/CommandBar";
 import DashboardPage from "@/components/pages/DashboardPage";
 import GRRPage from "@/components/pages/GRRPage";
+import GagesPage from "@/components/pages/GagesPage";
 import SPCPage from "@/components/pages/SPCPage";
 import AlertsPage from "@/components/pages/AlertsPage";
+import AlertRulesPage from "@/components/pages/AlertRulesPage";
+import IntegrationsPage from "@/components/pages/IntegrationsPage";
 import AuditPage from "@/components/pages/AuditPage";
 import ChatPage from "@/components/pages/ChatPage";
 import ReviewQueuePage from "@/components/pages/ReviewQueuePage";
@@ -17,9 +20,12 @@ import { Lock } from "lucide-react";
 const pages: Record<string, React.ComponentType> = {
   dashboard: DashboardPage,
   grr: GRRPage,
+  gages: GagesPage,
   review: ReviewQueuePage,
   spc: SPCPage,
   alerts: AlertsPage,
+  "alert-rules": AlertRulesPage,
+  integrations: IntegrationsPage,
   audit: AuditPage,
   chat: ChatPage,
 };

@@ -14,13 +14,16 @@ or paste the endpoint functions directly into main.py.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 import uuid
 from typing import Any
 
 from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -32,6 +35,7 @@ from agent.llm_analyst import (
     generate_grr_narrative,
     generate_predictive_insight,
     interpret_spc_violations,
+    stream_quality_answer,
 )
 from agent.adapters.registry import get_adapter
 from api.rate_limit import limiter
@@ -438,6 +442,142 @@ async def chat_with_agent(request: Request) -> ChatResponse:
     )
 
     return ChatResponse(answer=answer, context_used=context_sources)
+
+
+# Real context queries the streaming agent runs, in order. Each maps to one
+# node in the dashboard's live work-log. (id, label, detail, sql, context_key,
+# result-formatter). These are the SAME queries _build_system_context() runs —
+# here we emit an event the instant each one actually finishes.
+_STREAM_CONTEXT_STEPS: list[tuple[str, str, str, str, str, Any]] = [
+    (
+        "grr",
+        "Querying GR&R studies",
+        "Measurement-system capability",
+        """
+            SELECT equipment_id, characteristic_name, grr_pct, ndc,
+                   acceptance_decision, created_at
+            FROM grr_studies
+            ORDER BY created_at DESC
+            LIMIT 10
+        """,
+        "recent_grr_studies",
+        lambda n: f"{n} stud{'y' if n == 1 else 'ies'}",
+    ),
+    (
+        "spc",
+        "Scanning SPC violations",
+        "Control-chart breaches",
+        """
+            SELECT part_number, characteristic_name, violation_type,
+                   severity, measured_value, ucl, lcl, created_at
+            FROM quality_violations
+            WHERE alert_sent = FALSE OR acknowledged_by IS NULL
+            ORDER BY created_at DESC
+            LIMIT 20
+        """,
+        "open_violations",
+        lambda n: f"{n} open",
+    ),
+    (
+        "review",
+        "Checking pending reviews",
+        "Awaiting sign-off",
+        """
+            SELECT rq.id, gs.equipment_id, gs.grr_pct, gs.acceptance_decision
+            FROM review_queue rq
+            JOIN grr_studies gs ON gs.id = rq.study_id
+            WHERE rq.status = 'pending'
+            ORDER BY rq.created_at DESC
+            LIMIT 5
+        """,
+        "pending_reviews",
+        lambda n: f"{n} pending",
+    ),
+]
+
+
+@router.post(
+    "/chat/stream",
+    summary="Conversational quality agent (streaming)",
+    description=(
+        "Same agent as POST /chat, but streams its real work as Server-Sent "
+        "Events: one event per actual context query as it completes (with real "
+        "row counts), then the Gemini answer token-by-token. The dashboard renders "
+        "these events directly as the live 'thinking' work-log — no choreography."
+    ),
+)
+@limiter.limit("30/minute")
+async def chat_with_agent_stream(request: Request) -> StreamingResponse:
+    body = ChatRequest.model_validate(await request.json())
+    api_key = _check_api_key()  # raises 503 before streaming starts if unset
+    history = [{"role": m.role, "content": m.content} for m in body.conversation_history]
+    question = body.question
+
+    async def event_stream():
+        def sse(obj: dict[str, Any]) -> str:
+            return f"data: {json.dumps(obj)}\n\n"
+
+        t_start = time.perf_counter()
+        context: dict[str, Any] = {}
+        sources: list[str] = []
+
+        # ── Real context queries — emit start/done around each actual query ──
+        if body.context_override is not None:
+            context = body.context_override
+            sources = ["context_override"]
+        else:
+            for step_id, label, detail, sql, key, fmt in _STREAM_CONTEXT_STEPS:
+                yield sse({"t": "step", "id": step_id, "phase": "start", "label": label, "detail": detail})
+                try:
+                    async with AsyncSessionLocal() as session:
+                        result = await session.execute(text(sql))
+                        rows = [dict(row) for row in result.mappings().all()]
+                    context[key] = rows
+                    sources.append(key)
+                    yield sse({"t": "step", "id": step_id, "phase": "done", "count": len(rows), "result": fmt(len(rows))})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("stream context step %s failed: %s", step_id, exc)
+                    yield sse({"t": "step", "id": step_id, "phase": "done", "status": "skipped", "result": "unavailable"})
+
+        # ── Reasoning + token-streamed answer ───────────────────────────────
+        yield sse({"t": "step", "id": "reason", "phase": "start", "label": "Reasoning with Gemini", "detail": "Synthesizing answer"})
+
+        answer_parts: list[str] = []
+        composing = False
+        try:
+            async for piece in stream_quality_answer(question, context, history, api_key):
+                if not composing:
+                    composing = True
+                    yield sse({"t": "step", "id": "reason", "phase": "done", "result": "synthesized"})
+                    yield sse({"t": "step", "id": "compose", "phase": "start", "label": "Composing answer", "detail": "Drafting response"})
+                answer_parts.append(piece)
+                yield sse({"t": "delta", "text": piece})
+        except Exception as exc:  # noqa: BLE001
+            logger.error("stream answer generation failed: %s", exc)
+
+        if not composing:
+            # Nothing streamed (e.g. Gemini unavailable) — close out the reason step.
+            yield sse({"t": "step", "id": "reason", "phase": "done", "result": "synthesized"})
+        else:
+            yield sse({"t": "step", "id": "compose", "phase": "done", "result": "drafted"})
+
+        answer = "".join(answer_parts)
+        yield sse({
+            "t": "final",
+            "answer": answer,
+            "sources": sources,
+            "ms": int((time.perf_counter() - t_start) * 1000),
+        })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable proxy buffering (nginx/uvicorn)
+        },
+    )
 
 
 @router.get(

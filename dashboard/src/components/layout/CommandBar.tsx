@@ -5,7 +5,6 @@ import {
   Search,
   Sparkles,
   Bell,
-  Network,
   ChevronRight,
   TriangleAlert,
   LayoutDashboard,
@@ -19,7 +18,6 @@ import { useAppStore } from "@/lib/store";
 import { getDashboardSummary } from "@/api/apiClient";
 import { useBackendHealth } from "@/lib/useBackendHealth";
 import { useRealtimeStream } from "@/api/realtime";
-import IntegrationsModal from "./IntegrationsModal";
 
 const PAGE_META: Record<string, { label: string; icon: React.ComponentType<{ size?: number; className?: string }> }> = {
   dashboard: { label: "Overview", icon: LayoutDashboard },
@@ -35,7 +33,6 @@ export default function CommandBar() {
   const { activePage, notificationCount, setNotificationCount, setActivePage, setChatOpen, setPendingChatPrompt, setCommandPaletteOpen } = useAppStore();
   const [focused, setFocused] = useState(false);
   const [query, setQuery] = useState("");
-  const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const health = useBackendHealth();
 
@@ -101,7 +98,6 @@ export default function CommandBar() {
   const PageIcon = page.icon;
 
   return (
-    <>
       <header
         className="glass z-10 flex h-16 shrink-0 items-center gap-3 border-b px-6"
         style={{ borderColor: "var(--border-subtle)" }}
@@ -196,15 +192,6 @@ export default function CommandBar() {
         )}
 
         <button
-          onClick={() => setIsIntegrationsOpen(true)}
-          className="btn btn-secondary h-9 cursor-pointer"
-          title="System integrations and architecture"
-        >
-          <Network size={14} style={{ color: "var(--accent)" }} />
-          <span className="hidden lg:inline">Integrations</span>
-        </button>
-
-        <button
           onClick={() => setActivePage("alerts")}
           className="btn-icon relative h-9 w-9 cursor-pointer"
           title={notificationCount > 0 ? `${notificationCount} active alerts` : "Alert inbox"}
@@ -238,8 +225,5 @@ export default function CommandBar() {
           QE
         </div>
       </header>
-
-      <IntegrationsModal isOpen={isIntegrationsOpen} onClose={() => setIsIntegrationsOpen(false)} />
-    </>
   );
 }
